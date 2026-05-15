@@ -10,13 +10,60 @@ class PDFGenerator {
     }
   }
 
+  // Extract complaints from review texts
+  extractComplaintsFromTexts(reviewTexts) {
+    const complaintKeywords = {
+      'Shipping & Delivery': ['shipping', 'delivery', 'late', 'delayed', 'slow', 'package', 'arrived', 'dispatch', 'courier', 'ship', 'shipped', 'tracking', '快递', '配送', '物流'],
+      'Product Quality': ['quality', 'broken', 'defective', 'damaged', 'cheap', 'poor', 'bad', 'waste', 'useless', 'defect', 'cracked', 'not working', 'faulty', '品质', '质量', '坏了', '破损'],
+      'Customer Service': ['service', 'support', 'rude', 'helpful', 'response', 'staff', 'agent', 'contact', 'refund', 'return', 'exchange', '客服', '售后'],
+      'Price & Value': ['price', 'expensive', 'overpriced', 'value', 'worth', 'cost', 'money', 'waste of money', 'not worth', '价格', '贵', '不值'],
+      'Packaging': ['packaging', 'box', 'wrapping', 'seal', 'open', 'torn', 'packed', 'package damaged', '包装'],
+      'Wrong Item': ['wrong', 'incorrect', 'different', 'not as described', 'mismatch', 'size', 'color different', '错', '不对']
+    };
+    
+    const counts = {};
+    let totalComplaints = 0;
+    
+    for (const text of reviewTexts) {
+      if (!text) continue;
+      const lowerText = text.toLowerCase();
+      for (const [category, keywords] of Object.entries(complaintKeywords)) {
+        if (keywords.some(kw => lowerText.includes(kw))) {
+          counts[category] = (counts[category] || 0) + 1;
+          totalComplaints++;
+        }
+      }
+    }
+    
+    const complaints = [];
+    for (const [category, count] of Object.entries(counts)) {
+      complaints.push({
+        category: category,
+        count: count,
+        percentage: totalComplaints > 0 ? Math.round((count / totalComplaints) * 100) : 0
+      });
+    }
+    
+    return complaints.sort((a, b) => b.count - a.count);
+  }
+
   async generateReport(analysisData) {
     return new Promise((resolve, reject) => {
       try {
-        console.log('[PDF] Generating professional report...');
+        console.log('[PDF] Generating report...');
 
-        // Extract data
-        let pieData = analysisData?.pieData || analysisData?.data?.pieData || [];
+        // Extract data - support both formats
+        let pieData = analysisData?.pieData || [];
+        let complaints = analysisData?.complaints || analysisData?.complaintCategories || [];
+        let sampleReviews = analysisData?.sampleReviews || [];
+        
+        // If we have sample reviews but no complaints, extract them
+        if (complaints.length === 0 && sampleReviews.length > 0) {
+          const reviewTexts = sampleReviews.map(r => r.text).filter(t => t);
+          complaints = this.extractComplaintsFromTexts(reviewTexts);
+          console.log(`[PDF] Extracted ${complaints.length} complaints from ${reviewTexts.length} reviews`);
+        }
+        
         const positive = Number(pieData.find(p => p.name === 'Positive')?.value) || 0;
         const neutral = Number(pieData.find(p => p.name === 'Neutral')?.value) || 0;
         const negative = Number(pieData.find(p => p.name === 'Negative')?.value) || 0;
@@ -30,19 +77,16 @@ class PDFGenerator {
         const avgRating = ((positive * 5 + neutral * 3 + negative * 1) / total).toFixed(1);
         const sentimentScore = Math.round((positive - negative) / total * 50 + 50);
 
-        // Get complaints if available
-        const complaints = analysisData?.complaints || [];
-        
         const filename = `report_${Date.now()}.pdf`;
         const filepath = path.join(this.reportsDir, filename);
 
-        const doc = new PDFDocument({ margin: 50, size: 'A4', bufferPages: true });
+        const doc = new PDFDocument({ margin: 50, size: 'A4' });
         const stream = fs.createWriteStream(filepath);
         doc.pipe(stream);
 
         // ============ PAGE 1 ============
         
-        // Header with gradient effect
+        // Header
         doc.fillColor('#1a237e').font('Helvetica-Bold').fontSize(28).text('REVIEWMIND', { align: 'center' });
         doc.fontSize(12).fillColor('#546e7a').font('Helvetica').text('Customer Intelligence Report', { align: 'center' });
         doc.fontSize(9).fillColor('#78909c').text(`Generated: ${new Date().toLocaleString()}`, { align: 'center' });
@@ -57,31 +101,27 @@ class PDFGenerator {
         doc.text(`This report analyzes ${total.toLocaleString()} customer reviews. Overall sentiment is ${positivePct}% positive and ${negativePct}% negative with an average rating of ${avgRating}/5.0 stars.`, { align: 'left', width: 470 });
         doc.moveDown(2);
 
-        // Key Metrics Cards - Professional Design
+        // Key Metrics Cards
         const cardY = doc.y;
         
-        // Card 1
         doc.fillColor('#e3f2fd').rect(50, cardY, 150, 70).fill();
         doc.fillColor('#1565c0').fontSize(8).font('Helvetica-Bold').text('TOTAL REVIEWS', 60, cardY + 10);
         doc.fontSize(24).font('Helvetica-Bold').fillColor('#0d47a1').text(total.toLocaleString(), 60, cardY + 32);
         
-        // Card 2
         doc.fillColor('#e8f5e9').rect(210, cardY, 150, 70).fill();
         doc.fillColor('#2e7d32').fontSize(8).font('Helvetica-Bold').text('AVERAGE RATING', 220, cardY + 10);
         doc.fontSize(24).font('Helvetica-Bold').fillColor('#1b5e20').text(`${avgRating}/5.0`, 220, cardY + 32);
         
-        // Card 3
         doc.fillColor('#fff3e0').rect(370, cardY, 150, 70).fill();
         doc.fillColor('#e65100').fontSize(8).font('Helvetica-Bold').text('SENTIMENT SCORE', 380, cardY + 10);
         doc.fontSize(24).font('Helvetica-Bold').fillColor('#bf360c').text(`${sentimentScore}/100`, 380, cardY + 32);
         
         doc.moveDown(6.5);
 
-        // ============ PIE CHART ============
+        // ============ SENTIMENT PIE CHART ============
         doc.font('Helvetica-Bold').fontSize(16).fillColor('#1a237e').text('Sentiment Distribution', { underline: true });
         doc.moveDown(1);
 
-        // Draw Pie Chart
         const centerX = 200;
         const centerY = doc.y + 100;
         const radius = 80;
@@ -108,7 +148,7 @@ class PDFGenerator {
           startAngle = endAngle;
         });
         
-        // Pie Chart Legend
+        // Legend
         const legendX = 340;
         const legendY = centerY - 60;
         doc.fillColor('#4caf50').rect(legendX, legendY, 12, 12).fill();
@@ -127,24 +167,20 @@ class PDFGenerator {
         doc.moveDown(1);
 
         const chartY = doc.y;
-        const chartWidth = 400;
-        const maxValue = Math.max(positive, neutral, negative);
+        const maxValue = Math.max(positive, neutral, negative, 1);
         
-        // Positive Bar
         const posHeight = (positive / maxValue) * 100;
-        doc.fillColor('#4caf50').rect(100, chartY + 100 - posHeight, 40, posHeight).fill();
+        doc.fillColor('#4caf50').rect(100, chartY + 100 - posHeight, 40, Math.max(posHeight, 2)).fill();
         doc.fillColor('#37474f').fontSize(10).text('Positive', 105, chartY + 115);
         doc.text(`${positivePct}%`, 110, chartY + 100 - posHeight - 15);
         
-        // Neutral Bar
         const neuHeight = (neutral / maxValue) * 100;
-        doc.fillColor('#ff9800').rect(200, chartY + 100 - neuHeight, 40, neuHeight).fill();
+        doc.fillColor('#ff9800').rect(200, chartY + 100 - neuHeight, 40, Math.max(neuHeight, 2)).fill();
         doc.fillColor('#37474f').fontSize(10).text('Neutral', 208, chartY + 115);
         doc.text(`${neutralPct}%`, 210, chartY + 100 - neuHeight - 15);
         
-        // Negative Bar
         const negHeight = (negative / maxValue) * 100;
-        doc.fillColor('#f44336').rect(300, chartY + 100 - negHeight, 40, negHeight).fill();
+        doc.fillColor('#f44336').rect(300, chartY + 100 - negHeight, 40, Math.max(negHeight, 2)).fill();
         doc.fillColor('#37474f').fontSize(10).text('Negative', 305, chartY + 115);
         doc.text(`${negativePct}%`, 310, chartY + 100 - negHeight - 15);
         
@@ -159,7 +195,6 @@ class PDFGenerator {
         doc.text('PERCENTAGE', 300, tableY + 9);
         doc.text('RECOMMENDATION', 400, tableY + 9);
         
-        // Positive Row
         doc.fillColor('#f5f5f5').rect(50, tableY + 28, 500, 25).fill();
         doc.fillColor('#37474f').fontSize(9).font('Helvetica');
         doc.text('🟢 Positive', 65, tableY + 37);
@@ -167,7 +202,6 @@ class PDFGenerator {
         doc.text(`${positivePct}%`, 300, tableY + 37);
         doc.text('Leverage for marketing', 400, tableY + 37);
         
-        // Neutral Row
         doc.fillColor('white').rect(50, tableY + 53, 500, 25).fill();
         doc.fillColor('#37474f').fontSize(9).font('Helvetica');
         doc.text('🟠 Neutral', 65, tableY + 62);
@@ -175,44 +209,58 @@ class PDFGenerator {
         doc.text(`${neutralPct}%`, 300, tableY + 62);
         doc.text('Follow up to convert', 400, tableY + 62);
         
-        // Negative Row
         doc.fillColor('#f5f5f5').rect(50, tableY + 78, 500, 25).fill();
         doc.fillColor('#37474f').fontSize(9).font('Helvetica');
         doc.text('🔴 Negative', 65, tableY + 87);
         doc.text(negative.toLocaleString(), 200, tableY + 87);
         doc.text(`${negativePct}%`, 300, tableY + 87);
-        doc.text(negativePct > 25 ? 'Urgent Action Required' : 'Needs Improvement', 400, tableY + 87);
+        doc.text(negativePct > 25 ? 'Urgent Action' : 'Needs Improvement', 400, tableY + 87);
         
         doc.moveDown(5);
 
         // ============ PAGE 2 ============
         doc.addPage();
 
-        // Complaint Analysis Section
+        // ============ COMPLAINT ANALYSIS ============
         doc.font('Helvetica-Bold').fontSize(18).fillColor('#1a237e').text('Complaint Analysis', { align: 'center' });
         doc.moveDown(1);
 
-        if (complaints.length > 0) {
-          // Complaint Bar Chart
+        if (complaints && complaints.length > 0) {
           const complaintY = doc.y;
           const barWidth = 350;
           
+          doc.fontSize(11).font('Helvetica').fillColor('#37474f');
+          doc.text(`Based on analysis of ${complaints.reduce((sum, c) => sum + c.count, 0)} complaint mentions:`, 50, complaintY);
+          doc.moveDown(1);
+          
           complaints.slice(0, 5).forEach((complaint, idx) => {
-            const yPos = complaintY + (idx * 45);
-            const barLength = (complaint.value / negative) * barWidth;
+            const yPos = complaintY + 30 + (idx * 45);
+            const barLength = (complaint.count / Math.max(complaints[0]?.count, 1)) * barWidth;
             
-            doc.fillColor('#37474f').fontSize(10).text(complaint.name, 50, yPos + 5);
+            doc.fillColor('#1a237e').fontSize(10).font('Helvetica-Bold').text(complaint.category, 50, yPos + 5);
             doc.fillColor('#ef5350').rect(200, yPos, Math.max(barLength, 10), 18).fill();
-            doc.fillColor('#37474f').fontSize(9).text(`${complaint.value} reviews (${complaint.percentage}%)`, 200 + barLength + 10, yPos + 5);
+            doc.fillColor('#37474f').fontSize(9).font('Helvetica');
+            doc.text(`${complaint.count} mentions (${complaint.percentage}% of complaints)`, 200 + barLength + 10, yPos + 5);
           });
           
-          doc.moveDown(complaints.length * 1.2);
+          doc.moveDown(complaints.length * 1.2 + 2);
+          
+          // Add action items based on top complaint
+          if (complaints[0]) {
+            doc.font('Helvetica-Bold').fontSize(12).fillColor('#1a237e').text(`Priority Action: Fix "${complaints[0].category}" Issues`);
+            doc.fontSize(10).font('Helvetica').fillColor('#37474f');
+            doc.text(`This category accounts for ${complaints[0].percentage}% of all complaint mentions in your reviews.`, 65, doc.y + 5);
+            doc.text(`Addressing this could significantly reduce your negative feedback rate.`, 65, doc.y + 20);
+            doc.moveDown(2);
+          }
         } else {
-          doc.fillColor('#999').fontSize(11).text('No complaint data available. Upload CSV with review text for detailed analysis.', 50, doc.y);
+          doc.fillColor('#999').fontSize(11).font('Helvetica');
+          doc.text('No complaint data available.', 50, doc.y);
+          doc.text('To get detailed complaint analysis, ensure your CSV has a "Reviews" or "Text" column with customer comments.', 50, doc.y + 20);
           doc.moveDown(2);
         }
 
-        // ============ AI RECOMMENDATIONS ============
+        // ============ STRATEGIC RECOMMENDATIONS ============
         doc.font('Helvetica-Bold').fontSize(16).fillColor('#1a237e').text('Strategic Recommendations');
         doc.moveDown(0.8);
         
@@ -221,17 +269,20 @@ class PDFGenerator {
           doc.fillColor('#c62828').fontSize(12).font('Helvetica-Bold').text('⚠️ CRITICAL - Immediate Action Required', 65, doc.y + 12);
           doc.fillColor('#37474f').fontSize(10).font('Helvetica');
           doc.text(`Your data shows ${negativePct}% negative feedback (${negative.toLocaleString()} reviews).`, 65, doc.y + 35);
-          doc.text(`This is significantly above the industry benchmark of 15%.`, 65, doc.y + 50);
+          doc.text(`This exceeds the industry benchmark of 15%.`, 65, doc.y + 50);
           doc.moveDown(5);
           
           doc.fontSize(11).font('Helvetica-Bold').fillColor('#1a237e').text('ACTION PLAN:', 65, doc.y);
           doc.fontSize(10).font('Helvetica').fillColor('#37474f');
           doc.text('1️⃣ Export all negative reviews and categorize by complaint type', 75, doc.y + 18);
-          doc.text('2️⃣ Identify the #1 complaint category accounting for most negatives', 75, doc.y + 33);
-          doc.text('3️⃣ Implement a fix for that specific issue within 5 business days', 75, doc.y + 48);
-          doc.text('4️⃣ Respond personally to all 1-2 star reviews with solutions', 75, doc.y + 63);
-          doc.text('5️⃣ Re-analyze after 30 days to measure improvement', 75, doc.y + 78);
-          
+          if (complaints[0]) {
+            doc.text(`2️⃣ Focus on fixing "${complaints[0].category}" issues first`, 75, doc.y + 33);
+          } else {
+            doc.text('2️⃣ Identify the #1 complaint category from negative reviews', 75, doc.y + 33);
+          }
+          doc.text('3️⃣ Implement a fix within 5 business days', 75, doc.y + 48);
+          doc.text('4️⃣ Respond to all 1-2 star reviews', 75, doc.y + 63);
+          doc.text('5️⃣ Re-analyze after 30 days', 75, doc.y + 78);
         } else if (negativePct > 15) {
           doc.fillColor('#fff8e1').rect(50, doc.y, 500, 90).fill();
           doc.fillColor('#ef6c00').fontSize(12).font('Helvetica-Bold').text('📊 Moderate Risk - Targeted Improvements Needed', 65, doc.y + 12);
@@ -243,24 +294,26 @@ class PDFGenerator {
           doc.fontSize(11).font('Helvetica-Bold').fillColor('#1a237e').text('RECOMMENDATIONS:', 65, doc.y);
           doc.fontSize(10).font('Helvetica').fillColor('#37474f');
           doc.text('1️⃣ Identify top 3 complaint themes from negative reviews', 75, doc.y + 18);
-          doc.text('2️⃣ Prioritize fixes for the highest-volume complaint', 75, doc.y + 33);
+          if (complaints[0]) {
+            doc.text(`2️⃣ Prioritize fixing "${complaints[0].category}" - your most common complaint`, 75, doc.y + 33);
+          } else {
+            doc.text('2️⃣ Prioritize fixes for the highest-volume complaint', 75, doc.y + 33);
+          }
           doc.text('3️⃣ Leverage positive reviews for marketing content', 75, doc.y + 48);
           doc.text('4️⃣ Monitor sentiment changes weekly', 75, doc.y + 63);
-          
         } else {
           doc.fillColor('#e8f5e9').rect(50, doc.y, 500, 80).fill();
           doc.fillColor('#2e7d32').fontSize(12).font('Helvetica-Bold').text('✅ Healthy Sentiment - Maintain Excellence', 65, doc.y + 12);
           doc.fillColor('#37474f').fontSize(10).font('Helvetica');
           doc.text(`Your data shows only ${negativePct}% negative feedback - excellent performance!`, 65, doc.y + 35);
           doc.text(`This puts you above industry benchmarks.`, 65, doc.y + 50);
-          doc.moveDown(4.5);
+          doc.moveDown(4);
           
           doc.fontSize(11).font('Helvetica-Bold').fillColor('#1a237e').text('OPPORTUNITIES:', 65, doc.y);
           doc.fontSize(10).font('Helvetica').fillColor('#37474f');
           doc.text('1️⃣ Convert positive reviewers into brand advocates', 75, doc.y + 18);
-          doc.text('2️⃣ Use positive reviews as social proof on your website', 75, doc.y + 33);
-          doc.text('3️⃣ Implement a referral program for satisfied customers', 75, doc.y + 48);
-          doc.text('4️⃣ Monitor for any negative trend changes', 75, doc.y + 63);
+          doc.text('2️⃣ Use positive reviews as social proof', 75, doc.y + 33);
+          doc.text('3️⃣ Implement a referral program', 75, doc.y + 48);
         }
         
         doc.moveDown(6);
@@ -279,23 +332,21 @@ class PDFGenerator {
         doc.moveDown(4);
 
         // ============ FOOTER ============
-        const pageCount = doc.bufferedPageRange().count;
-        for (let i = 0; i < pageCount; i++) {
-          doc.switchToPage(i);
-          const pageHeight = doc.page.height;
-          doc.fontSize(8).fillColor('#90a4ae');
-          doc.text('ReviewMind Intelligence Platform | Confidential Business Report', 50, pageHeight - 30, { align: 'center', width: 500 });
-          doc.text(`Page ${i + 1} of ${pageCount} | Generated: ${new Date().toLocaleDateString()}`, 50, pageHeight - 18, { align: 'center', width: 500 });
-        }
+        doc.fontSize(8).fillColor('#90a4ae');
+        doc.text('ReviewMind Intelligence Platform | Confidential Business Report', 50, doc.page.height - 30, { align: 'center', width: 500 });
+        doc.text(`Report ID: ${filename.replace('.pdf', '')} | Generated: ${new Date().toLocaleDateString()}`, 50, doc.page.height - 18, { align: 'center', width: 500 });
 
         doc.end();
 
         stream.on('finish', () => {
-          console.log(`[PDF] Professional report generated: ${filename}`);
-          resolve({ success: true, filename, filepath, reportId: `report_${Date.now()}` });
+          console.log(`[PDF] Report generated: ${filename}`);
+          resolve({ success: true, filename, filepath, reportId: filename.replace('.pdf', '') });
         });
 
-        stream.on('error', reject);
+        stream.on('error', (err) => {
+          console.error('[PDF] Stream error:', err);
+          reject(err);
+        });
 
       } catch (error) {
         console.error('[PDF] Error:', error);

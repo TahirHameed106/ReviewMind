@@ -350,12 +350,17 @@ const ChatDrawer = ({ analysis, onClose }) => {
           analysisContext: {
             totalReviews: analysis?.metrics?.total_reviews || 0,
             avgRating: analysis?.metrics?.avg_rating || 0,
-            sentimentData: analysis?.pieData || []
+            sentimentData: analysis?.pieData || [],
+            metrics: analysis?.metrics || {},
+            complaints: analysis?.complaintCategories || []
           }
         });
 
-        setConversationId(response.data.conversationId);
+        if (response.data.conversationId) {
+          setConversationId(response.data.conversationId);
+        }
       } catch (error) {
+        console.error('Chat bootstrap error:', error);
         setMessages((prev) => [
           ...prev,
           { role: 'assistant', content: 'Chat service is not reachable right now. You can still continue the analysis.' }
@@ -363,7 +368,9 @@ const ChatDrawer = ({ analysis, onClose }) => {
       }
     };
 
-    bootstrap();
+    if (analysis?.pieData?.length > 0) {
+      bootstrap();
+    }
   }, [analysis]);
 
   useEffect(() => {
@@ -384,8 +391,13 @@ const ChatDrawer = ({ analysis, onClose }) => {
         message: trimmed
       });
 
-      setMessages((prev) => [...prev, { role: 'assistant', content: response.data.assistantResponse }]);
+      if (response.data.assistantResponse) {
+        setMessages((prev) => [...prev, { role: 'assistant', content: response.data.assistantResponse }]);
+      } else {
+        throw new Error('No response from server');
+      }
     } catch (error) {
+      console.error('Send message error:', error);
       setMessages((prev) => [...prev, { role: 'assistant', content: 'I could not answer that right now. Please try again in a moment.' }]);
     } finally {
       setBusy(false);
@@ -419,8 +431,9 @@ const ChatDrawer = ({ analysis, onClose }) => {
           onChange={(event) => setMessage(event.target.value)}
           onKeyDown={(event) => event.key === 'Enter' && sendMessage()}
           placeholder="Ask about the review data..."
+          disabled={busy || !conversationId}
         />
-        <button className="primary-button" onClick={sendMessage} disabled={busy}>
+        <button className="primary-button" onClick={sendMessage} disabled={busy || !conversationId}>
           <Send size={16} />
           Send
         </button>
@@ -1097,77 +1110,91 @@ function App() {
   };
 
   const uploadAndAnalyze = async () => {
-  if (!file) {
-    setError('Choose a CSV file first.');
-    return;
-  }
-
-  setError('');
-  setLoading(true);
-  setStatus('uploading');
-
-  try {
-    const formData = new FormData();
-    formData.append('file', file);
-
-    // ✅ FIXED: Correct endpoint - /api/ml/upload-analyze
-    const analysisResponse = await axios.post(`${API_BASE}/api/ml/upload-analyze`, formData);
-
-    console.log('[Dashboard] API Response:', analysisResponse.data);
-
-    const responseData = analysisResponse.data?.data || {};
-    
-    // Validate response
-    if (!responseData.pieData || !Array.isArray(responseData.pieData)) {
-      console.error('[Dashboard] Invalid response:', responseData);
-      setError('Analysis response missing sentiment data');
-      setStatus('error');
+    if (!file) {
+      setError('Choose a CSV file first.');
       return;
     }
 
-    setAnalysis({
-      ...initialAnalysis,
-      ...responseData,
-      pieData: responseData.pieData || [],
-      metrics: responseData.metrics || { total_reviews: 0, avg_rating: 0 },
-      timeSeriesData: analysisResponse.data?.timeSeriesData || [],
-      blockchainVerification: analysisResponse.data?.blockchainVerification || null,
-      analysisMetadata: analysisResponse.data?.analysisMetadata || null
-    });
+    setError('');
+    setLoading(true);
+    setStatus('uploading');
 
-    setPipelineProgress([
-      { key: 'upload', label: 'CSV uploaded', status: 'done' },
-      { key: 'parse', label: 'CSV parsed', status: 'done' },
-      { key: 'python', label: 'Python analysis', status: 'done' },
-      { key: 'blockchain', label: 'Blockchain verification', status: 'done' },
-      { key: 'dashboard', label: 'Dashboard ready', status: 'done' }
-    ]);
-    
-    setTab('overview');
-    setStatus('ready');
-    setReportStatus('Analysis complete. You can export a PDF report now.');
-    
-  } catch (analysisError) {
-    console.error('[Dashboard] Upload error:', analysisError);
-    const errorMessage = 
-      analysisError.response?.data?.error ||
-      analysisError.response?.data?.details ||
-      analysisError.message ||
-      'Analysis failed. Make sure Python service is running on port 8000.';
-    
-    setError(errorMessage);
-    setStatus('error');
-    setPipelineProgress([
-      { key: 'upload', label: 'CSV uploaded', status: 'done' },
-      { key: 'parse', label: 'CSV parsed', status: 'done' },
-      { key: 'python', label: 'Python analysis', status: 'error' },
-      { key: 'blockchain', label: 'Blockchain verification', status: 'idle' },
-      { key: 'dashboard', label: 'Dashboard ready', status: 'idle' }
-    ]);
-  } finally {
-    setLoading(false);
-  }
-};
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+
+      const analysisResponse = await axios.post(`${API_BASE}/api/ml/upload-analyze`, formData);
+
+      console.log('[Dashboard] API Response:', analysisResponse.data);
+
+      let responseData = {};
+      
+      if (analysisResponse.data.data) {
+        responseData = analysisResponse.data.data;
+      } else if (analysisResponse.data.pieData) {
+        responseData = analysisResponse.data;
+      } else {
+        console.error('[Dashboard] Unexpected response format:', analysisResponse.data);
+        setError('Invalid response format from server');
+        setStatus('error');
+        return;
+      }
+      
+      if (!responseData.pieData || !Array.isArray(responseData.pieData)) {
+        console.error('[Dashboard] Missing pieData in response:', responseData);
+        setError('Analysis response missing sentiment data');
+        setStatus('error');
+        return;
+      }
+
+      setAnalysis({
+        ...initialAnalysis,
+        pieData: responseData.pieData || [],
+        metrics: responseData.metrics || { total_reviews: 0, avg_rating: 0 },
+        ratingDistribution: responseData.ratingDistribution || [],
+        complaintCategories: responseData.complaintCategories || [],
+        timeSeriesData: responseData.timeSeriesData || [],
+        blockchainVerification: responseData.blockchainVerification || null,
+        analysisMetadata: responseData.analysisMetadata || {
+          totalReviewsAnalyzed: responseData.metrics?.total_reviews || 0,
+          pythonServiceStatus: 'success',
+          analysisTime: new Date().toISOString()
+        }
+      });
+
+      setPipelineProgress([
+        { key: 'upload', label: 'CSV uploaded', status: 'done' },
+        { key: 'parse', label: 'CSV parsed', status: 'done' },
+        { key: 'python', label: 'Python analysis', status: 'done' },
+        { key: 'blockchain', label: 'Blockchain verification', status: 'pending' },
+        { key: 'dashboard', label: 'Dashboard ready', status: 'done' }
+      ]);
+      
+      setTab('overview');
+      setStatus('ready');
+      setReportStatus(`Analysis complete! ${responseData.metrics?.total_reviews || 0} reviews analyzed.`);
+      
+    } catch (analysisError) {
+      console.error('[Dashboard] Upload error:', analysisError);
+      const errorMessage = 
+        analysisError.response?.data?.error ||
+        analysisError.response?.data?.message ||
+        analysisError.message ||
+        'Analysis failed. Make sure Python service is running on port 8000.';
+      
+      setError(errorMessage);
+      setStatus('error');
+      setPipelineProgress([
+        { key: 'upload', label: 'CSV uploaded', status: 'done' },
+        { key: 'parse', label: 'CSV parsed', status: 'done' },
+        { key: 'python', label: 'Python analysis', status: 'error' },
+        { key: 'blockchain', label: 'Blockchain verification', status: 'idle' },
+        { key: 'dashboard', label: 'Dashboard ready', status: 'idle' }
+      ]);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const generateReport = async () => {
     if (!hasAnalysis) {
@@ -1184,8 +1211,16 @@ function App() {
     try {
       setReportBusy(true);
       setReportStatus('Generating PDF report...');
+      
+      const reportData = {
+        pieData: analysis.pieData || [],
+        metrics: analysis.metrics || {},
+        ratingDistribution: analysis.ratingDistribution || [],
+        complaintCategories: analysis.complaintCategories || []
+      };
+      
       const response = await axios.post(`${API_BASE}/api/advanced/reports/generate`, {
-        analysisData: analysis
+        analysisData: reportData
       });
 
       const report = response.data.report;
@@ -1515,8 +1550,8 @@ function App() {
                         <strong>{Number(analysis?.metrics?.avg_rating || 0).toFixed(2)} / 5</strong>
                       </div>
                       <div className="metric-row">
-                        <span>Analysis mode</span>
-                        <strong>{analysis?.metrics?.model_mode || 'Clustered review intelligence'}</strong>
+                        <span>Risk Level</span>
+                        <strong>{analysis?.metrics?.risk_level || 'Unknown'}</strong>
                       </div>
                       <div className="metric-row">
                         <span>Blockchain</span>
@@ -1530,46 +1565,27 @@ function App() {
               </div>
 
               <Panel
-                title="Time series analysis"
-                subtitle="Rolling review trends and short-term ARIMA forecast from the uploaded rating sequence."
+                title="Complaint Analysis"
+                subtitle="Top complaint categories identified from negative reviews."
               >
-                {hasTimeSeries ? (
-                  <ResponsiveContainer width="100%" height={360}>
-                    <AreaChart data={trendChartData}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(148, 163, 184, 0.3)" />
-                      <XAxis dataKey="month" tick={{ fill: '#64748b', fontSize: 12 }} />
-                      <YAxis tick={{ fill: '#64748b', fontSize: 12 }} domain={['auto', 'auto']} />
-                      <Tooltip
-                        contentStyle={{
-                          background: 'var(--surface-strong)',
-                          border: '1px solid var(--border)',
-                          borderRadius: '12px'
-                        }}
-                      />
-                      <Legend />
-                      <Area
-                        type="monotone"
-                        dataKey="satisfaction"
-                        name="Rating trend"
-                        stroke="#2563eb"
-                        fill="rgba(37, 99, 235, 0.15)"
-                        strokeWidth={3}
-                        activeDot={{ r: 6 }}
-                      />
-                      <Line
-                        type="monotone"
-                        dataKey="reviews"
-                        name="Review count"
-                        stroke="#059669"
-                        strokeWidth={2}
-                        dot={{ r: 3 }}
-                      />
-                    </AreaChart>
-                  </ResponsiveContainer>
+                {analysis?.complaintCategories && analysis.complaintCategories.length > 0 ? (
+                  <div className="stack" style={{ gap: '12px' }}>
+                    {analysis.complaintCategories.slice(0, 5).map((complaint, idx) => (
+                      <div key={idx} className="insight-box">
+                        <div className="insight-box__icon">
+                          <AlertCircle size={18} />
+                        </div>
+                        <div>
+                          <strong>{complaint.category}</strong>
+                          <p>{complaint.count} reviews ({complaint.percentage}% of negatives)</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
                 ) : (
-                  <SentimentEmptyState
-                    title="Time series will appear here"
-                    description="Upload a CSV with rating data to generate trend and forecast visuals."
+                  <SentimentEmptyState 
+                    title="No complaint data available" 
+                    description="Upload a CSV with review text to see complaint categorization." 
                   />
                 )}
               </Panel>
@@ -1595,8 +1611,8 @@ function App() {
                         <div>
                           <strong>Analysis complete</strong>
                           <p>
-                            Your review data has been analyzed. Use the metrics, sentiment split, and time series
-                            charts above to understand customer feedback trends.
+                            Your review data has been analyzed. Use the metrics, sentiment split, and complaint
+                            categories above to understand customer feedback trends.
                           </p>
                         </div>
                       </div>
@@ -1640,7 +1656,7 @@ function App() {
                   <div>
                     <strong>{reportBusy ? 'Building report...' : 'Create the latest analysis report'}</strong>
                     <p>
-                      The PDF includes sentiment visuals, rating distribution, trends, AI insights, and chain status.
+                      The PDF includes sentiment visuals, rating distribution, complaint analysis, AI insights, and chain status.
                     </p>
                   </div>
                   <button className="primary-button" onClick={generateReport} disabled={!hasAnalysis || reportBusy || !canUseFeature('report')}>
