@@ -1,0 +1,369 @@
+/* ============== DASHBOARD PROFESSIONAL STYLES ============== */
+
+:root {
+  --primary: #1e40af;
+  --secondary: #0891b2;
+  --success: #059669;
+  --warning: #d97706;
+  --danger: #dc2626;
+  --light: #f8fafc;
+  --dark: #0f172a;
+  --border: #e2e8f0;
+  --text-secondary: #64748b;
+}
+
+/* ============== CARD STYLES ============== */
+.card {
+  background: white;
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+  border: 1px solid var(--border);
+  transition: all 0.3s ease;
+}
+
+.card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  transform: translateY(-2px);
+}
+
+/* ============== STAT CARD ============== */
+.stat-card {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  transition: all 0.3s ease;
+}
+
+.stat-card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  transform: translateY(-2px);
+}
+
+.stat-card-value {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--dark);
+  margin: 0;
+}
+
+.stat-card-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: #64748b;
+  margin: 0 0 8px 0;
+}
+
+.stat-card-trend {
+  font-size: 12px;
+  font-weight: 500;
+  margin: 8px 0 0 0;
+}
+
+/* ============== CHART STYLES ============== */
+.chart-container {
+  width: 100%;
+  height: 300px;
+  margin-top: 20px;
+}
+
+.chart-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--dark);
+  margin: 0 0 20px 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+/* ============== BUTTON STYLES ============== */
+.btn {
+  padding: 10px 20px;
+  border-radius: 8px;
+  border: none;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-primary {
+  background-color: var(--primary);
+  color: white;
+}
+
+.btn-primary:hover {
+  background-color: #1e3a8a;
+  transform: translateY(-2px);
+  box-shadow: 0 10px 20px rgba(30, 64, 175, 0.3);
+}
+
+.btn-secondary {
+  background-color: white;
+  border: 1px solid var(--border);
+  color: var(--dark);
+}
+
+.btn-secondary:hover {
+  background-color: var(--light);
+  border-color: var(--secondary);
+}
+
+.btn:disabled {
+  background-color: #cbd5e1;
+  cursor: not-allowed;
+  color: #64748b;
+}
+
+/* ============== UPLOAD SECTION ============== */
+.upload-section {
+  min-height: 100vh;
+  background: linear-gradient(135deg, var(--primary) 0%, var(--secondary) 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.upload-card {
+  background: white;
+  border-radius: 16px;
+  padding: 48px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  max-width: 500px;
+  width: 100%;
+  text-align: center;
+}
+
+.upload-icon-container {
+  width: 80px;
+  height: 80px;
+  margin: 0 auto 20px;
+  background: rgba(30, 64, 175, 0.1);
+  border-radius: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.upload-title {
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--dark);
+  margin: 0 0 12px 0;
+}
+
+.upload-subtitle {
+  color: #64748b;
+  font-size: 16px;
+  margin: 0;
+}
+
+.upload-drop-zone {
+  border: 2px dashed var(--secondary);
+  border-radius: 12px;
+  padding: 40px 20px;
+  margin-bottom: 24px;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.upload-drop-zone:hover {
+  background: rgba(30, 64, 175, 0.08);
+}
+
+.upload-drop-zone.has-file {
+  background: rgba(30, 64, 175, 0.08);
+}
+
+.upload-drop-text {
+  margin: 12px 0 4px 0;
+  color: var(--dark);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.upload-drop-hint {
+  margin: 0;
+  color: #64748b;
+  font-size: 14px;
+}
+
+/* ============== DASHBOARD HEADER ============== */
+.dashboard-header {
+  margin-bottom: 32px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 20px;
+}
+
+.dashboard-title {
+  font-size: 32px;
+  font-weight: 700;
+  color: var(--dark);
+  margin: 0 0 8px 0;
+}
+
+.dashboard-subtitle {
+  color: #64748b;
+  font-size: 16px;
+  margin: 0;
+}
+
+/* ============== GRID LAYOUT ============== */
+.grid-2 {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 20px;
+}
+
+.grid-full {
+  grid-column: 1 / -1;
+}
+
+.grid-layout {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(450px, 1fr));
+  gap: 20px;
+}
+
+/* ============== INSIGHTS SECTION ============== */
+.insight-box {
+  padding: 16px;
+  border-left: 4px solid;
+  border-radius: 8px;
+  margin-bottom: 16px;
+}
+
+.insight-title {
+  font-weight: 600;
+  font-size: 14px;
+  margin: 0 0 8px 0;
+}
+
+.insight-text {
+  font-size: 14px;
+  line-height: 1.6;
+  margin: 0;
+}
+
+.insight-success {
+  background: rgba(5, 150, 105, 0.1);
+  border-color: var(--success);
+  color: var(--dark);
+}
+
+.insight-primary {
+  background: rgba(30, 64, 175, 0.1);
+  border-color: var(--primary);
+  color: var(--dark);
+}
+
+.insight-secondary {
+  background: #f8fafc;
+  border-color: var(--secondary);
+  color: var(--dark);
+}
+
+/* ============== PROGRESS BAR ============== */
+.progress-container {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.progress-bar {
+  flex: 1;
+  height: 8px;
+  background: var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--primary);
+  transition: width 0.3s ease;
+}
+
+.progress-label {
+  color: var(--dark);
+  font-weight: 600;
+  font-size: 14px;
+  min-width: 50px;
+}
+
+/* ============== FOOTER ============== */
+.dashboard-footer {
+  margin-top: 40px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+  text-align: center;
+  color: #64748b;
+  font-size: 14px;
+}
+
+/* ============== ANIMATIONS ============== */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.fade-in {
+  animation: fadeIn 0.5s ease-in-out;
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+/* ============== RESPONSIVE ============== */
+@media (max-width: 768px) {
+  .dashboard-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .grid-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .upload-card {
+    padding: 32px 20px;
+  }
+
+  .dashboard-title {
+    font-size: 24px;
+  }
+
+  .stat-card {
+    flex-direction: column;
+    text-align: left;
+  }
+
+  .stat-card-value {
+    font-size: 24px;
+    margin-top: 12px;
+  }
+}
