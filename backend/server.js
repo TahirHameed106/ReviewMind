@@ -7,11 +7,21 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 const axios = require('axios');
+const FormData = require('form-data');
 const { poolPromise } = require('./db/connection');
 
+// Environment validation
+if (!process.env.ML_SERVICE_URL) {
+  console.warn("⚠️ ML_SERVICE_URL not set. Using default: http://localhost:8000");
+}
+
+if (!process.env.GROQ_API_KEY) {
+  console.warn("⚠️ GROQ_API_KEY not set. Chat features will use fallback mode.");
+}
+
 console.log('🔑 Environment Check:', {
-  GROQ: process.env.GROQ_API_KEY ? '✅ Loaded' : '❌ Missing',
-  GEMINI: process.env.GEMINI_API_KEY ? '✅ Loaded' : '❌ Missing',
+  GROQ: process.env.GROQ_API_KEY ? '✅ Loaded' : '❌ Missing (fallback mode)',
+  ML_SERVICE_URL: process.env.ML_SERVICE_URL || 'http://localhost:8000 (default)',
 });
 
 const app = express();
@@ -23,7 +33,18 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 app.get('/', (req, res) => {
-  res.json({ status: 'ReviewMind API is running', version: '1.0.0' });
+  res.json({ 
+    status: 'ReviewMind API is running', 
+    version: '2.0',
+    endpoints: [
+      'POST /api/ml/upload-analyze',
+      'POST /api/advanced/chat/conversation',
+      'POST /api/advanced/chat/message',
+      'POST /api/advanced/reports/generate',
+      'GET /api/ml/health',
+      'GET /health'
+    ]
+  });
 });
 
 // File upload config
@@ -37,107 +58,24 @@ const storage = multer.diskStorage({
     cb(null, `csv_${Date.now()}_${file.originalname}`);
   }
 });
-const upload = multer({ storage, limits: { fileSize: 100 * 1024 * 1024 } });
+const upload = multer({ 
+  storage, 
+  limits: { fileSize: 20 * 1024 * 1024 } // 20MB limit (reduced from 100MB)
+});
 
 // Chat storage
 const chatSessions = new Map();
 
-// ============ COMPLAINT EXTRACTION WITH URDU & ENGLISH ============
-function extractComplaintsFromTexts(texts) {
-  const complaintKeywords = {
-    'Product Quality': [
-      'quality', 'broken', 'defective', 'damaged', 'cheap', 'poor', 'bad', 'waste', 
-      'useless', 'defect', 'cracked', 'not working', 'faulty',
-      'معیار', 'خراب', 'ٹوٹا ہوا', 'ناقص', 'گھٹیا', 'برا'
-    ],
-    'Price & Value': [
-      'price', 'expensive', 'overpriced', 'value', 'worth', 'cost', 'money', 
-      'waste of money', 'not worth',
-      'قیمت', 'مہنگا', 'قیمتی', 'مول', 'قدر', 'لاگت', 'پیسے', 'پیسوں کا ضیاع', 'ناکارہ'
-    ],
-    'Shipping & Delivery': [
-      'shipping', 'delivery', 'late', 'delayed', 'slow', 'package', 'arrived', 
-      'dispatch', 'courier', 'ship', 'shipped',
-      'ترسیل', 'ڈلیوری', 'دیر', 'تاخیر', 'سست', 'پیکیج', 'پہنچا', 'بھیجا', 'کوریئر', 'جہاز'
-    ],
-    'Packaging': [
-      'packaging', 'box', 'wrapping', 'seal', 'open', 'torn', 'packed', 'package damaged',
-      'پیکنگ', 'بکس', 'لپیٹ', 'مہر', 'کھلا', 'پھٹا', 'بھرا', 'پیکیج خراب'
-    ],
-    'Wrong Item': [
-      'wrong', 'incorrect', 'different', 'not as described', 'mismatch', 'size', 'color different',
-      'غلط', 'غلط شے', 'مختلف', 'جیسا بیان کیا تھا ویسا نہیں', 'سائز', 'رنگ مختلف'
-    ]
-  };
-  
-  const counts = {};
-  let totalMatched = 0;
-  
-  for (const text of texts) {
-    if (!text) continue;
-    const lowerText = text.toLowerCase();
-    
-    let matchedCategory = null;
-    for (const [category, keywords] of Object.entries(complaintKeywords)) {
-      if (keywords.some(kw => lowerText.includes(kw))) {
-        matchedCategory = category;
-        break;
-      }
-    }
-    
-    if (matchedCategory) {
-      counts[matchedCategory] = (counts[matchedCategory] || 0) + 1;
-      totalMatched++;
-    }
-  }
-  
-  const complaints = [];
-  for (const [category, count] of Object.entries(counts)) {
-    complaints.push({
-      category: category,
-      count: count,
-      percentage: totalMatched > 0 ? Math.round((count / totalMatched) * 100) : 0
-    });
-  }
-  
-  return complaints.sort((a, b) => b.count - a.count);
-}
-
-// Rating column names
-const RATING_COLUMNS = ['rating', 'ratings', 'score', 'stars', 'rate', 'review_rating', 'product_rating', 'star_rating', 'overall', 'point', 'points', 'Score', 'Rating'];
-const REVIEW_COLUMNS = ['review', 'reviews', 'review_text', 'text', 'comment', 'comments', 'feedback', 'content', 'body', 'description', 'summary', 'Review', 'Reviews'];
-const SENTIMENT_COLUMNS = ['sentiment', 'sentiments', 'label', 'class', 'category', 'Sentiment', 'Sentiments'];
-
-function findColumn(headers, columnLists) {
-  for (let i = 0; i < headers.length; i++) {
-    const colLower = headers[i].toLowerCase().trim();
-    for (const pattern of columnLists) {
-      if (colLower === pattern.toLowerCase() || colLower.includes(pattern.toLowerCase())) {
-        return { index: i, name: headers[i] };
-      }
-    }
-  }
-  return null;
-}
-
-function extractRating(value) {
-  if (!value) return null;
-  const num = parseFloat(String(value).trim());
-  if (!isNaN(num) && num >= 0 && num <= 5) return num;
-  const match = String(value).match(/(\d+(?:\.\d+)?)/);
-  if (match) {
-    const n = parseFloat(match[1]);
-    if (n >= 1 && n <= 10) return n > 5 ? n / 2 : n;
-  }
-  const starCount = (String(value).match(/★/g) || []).length;
-  if (starCount > 0) return starCount;
-  return null;
-}
-
 // ============ CHAT ROUTES ============
 app.post('/api/advanced/chat/conversation', (req, res) => {
   const conversationId = `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  chatSessions.set(conversationId, { id: conversationId, context: req.body.analysisContext || {}, messages: [], createdAt: new Date() });
+  chatSessions.set(conversationId, { 
+    id: conversationId, 
+    context: req.body.analysisContext || {}, 
+    messages: [], 
+    createdAt: new Date() 
+  });
+  console.log(`[Chat] Created conversation: ${conversationId}`);
   res.json({ success: true, conversationId });
 });
 
@@ -148,165 +86,248 @@ app.post('/api/advanced/chat/message', async (req, res) => {
     if (!session) return res.status(404).json({ error: 'Conversation not found' });
     
     const sentimentData = session.context?.sentimentData || [];
+    const metrics = session.context?.metrics || {};
+    
     const positive = sentimentData.find(p => p.name === 'Positive')?.value || 0;
     const neutral = sentimentData.find(p => p.name === 'Neutral')?.value || 0;
     const negative = sentimentData.find(p => p.name === 'Negative')?.value || 0;
     const total = positive + neutral + negative;
+    const positivePct = total > 0 ? ((positive / total) * 100).toFixed(1) : 0;
+    const negativePct = total > 0 ? ((negative / total) * 100).toFixed(1) : 0;
+    const avgRating = metrics?.avg_rating || (total > 0 ? ((positive * 5 + neutral * 3 + negative * 1) / total).toFixed(1) : 0);
     
-    let reply = `📊 Based on YOUR ${total} reviews: ${positive} positive, ${negative} negative (${total > 0 ? ((negative/total)*100).toFixed(1) : 0}% negative).`;
+    const systemPrompt = `You are ReviewMind AI. Use ONLY this real data:
+- Total Reviews: ${total}
+- Positive: ${positive} (${positivePct}%)
+- Neutral: ${neutral}
+- Negative: ${negative} (${negativePct}%)
+- Average Rating: ${avgRating}/5.0
+
+Answer based ONLY on these numbers. Be specific and actionable.`;
+    
+    let reply = '';
     
     if (process.env.GROQ_API_KEY) {
       try {
-        const groqResponse = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
-          model: 'llama-3.3-70b-versatile',
-          messages: [{ role: 'system', content: `You are ReviewMind AI. Data: ${positive} positive, ${negative} negative out of ${total} reviews.` }, { role: 'user', content: message }],
-          max_tokens: 300
-        }, { headers: { 'Authorization': `Bearer ${process.env.GROQ_API_KEY}` }, timeout: 10000 });
+        console.log('[Chat] Calling Groq API...');
+        const groqResponse = await axios.post(
+          'https://api.groq.com/openai/v1/chat/completions',
+          {
+            model: 'llama-3.3-70b-versatile',
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: message }
+            ],
+            temperature: 0.7,
+            max_tokens: 500
+          },
+          {
+            headers: { 'Authorization': `Bearer ${process.env.GROQ_API_KEY}` },
+            timeout: 15000
+          }
+        );
         reply = groqResponse.data.choices[0].message.content;
-      } catch(e) { console.log('Groq error:', e.message); }
+        console.log('[Chat] Groq response received');
+      } catch (groqError) {
+        console.error('[Chat] Groq error:', groqError.message);
+        reply = `📊 **Based on YOUR ${total.toLocaleString()} reviews:**\n\n👍 Positive: ${positive.toLocaleString()} (${positivePct}%)\n👎 Negative: ${negative.toLocaleString()} (${negativePct}%)\n⭐ Average Rating: ${avgRating}/5.0\n\nAsk me: "What are the main complaints?" or "How to improve?"`;
+      }
+    } else {
+      reply = `📊 **Based on YOUR ${total.toLocaleString()} reviews:**\n\n👍 Positive: ${positive.toLocaleString()} (${positivePct}%)\n👎 Negative: ${negative.toLocaleString()} (${negativePct}%)\n⭐ Average Rating: ${avgRating}/5.0\n\nAsk me: "What are the main complaints?" or "How to improve?"`;
     }
     
-    session.messages.push({ role: 'user', content: message }, { role: 'assistant', content: reply });
+    session.messages.push({ role: 'user', content: message });
+    session.messages.push({ role: 'assistant', content: reply });
+    
     res.json({ success: true, assistantResponse: reply });
   } catch(error) {
+    console.error('Chat error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// ============ ML UPLOAD ROUTE ============
+// ============ ML UPLOAD ROUTE - Forwards to Python ML Service ============
 app.post('/api/ml/upload-analyze', upload.single('file'), async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
     
     console.log(`[ML] Processing: ${req.file.originalname}`);
     
-    let csvData;
-    try { csvData = fs.readFileSync(req.file.path, 'utf8'); } catch(e) { csvData = fs.readFileSync(req.file.path, 'latin1'); }
+    // Forward to Python ML service
+    const form = new FormData();
+    form.append('file', fs.createReadStream(req.file.path), {
+      filename: req.file.originalname,
+      contentType: 'text/csv',
+    });
     
-    const lines = csvData.trim().split('\n');
-    const headers = lines[0].split(',').map(h => h.trim().replace(/^"|"$/g, ''));
+    const mlServiceUrl = process.env.ML_SERVICE_URL || 'http://localhost:8000';
+    console.log(`[ML] Forwarding to: ${mlServiceUrl}/analyze/dashboard-data`);
     
-    const ratingCol = findColumn(headers, RATING_COLUMNS);
-    const reviewCol = findColumn(headers, REVIEW_COLUMNS);
-    const sentimentCol = findColumn(headers, SENTIMENT_COLUMNS);
-    
-    console.log(`[ML] Rating: ${ratingCol?.name || 'none'}, Review: ${reviewCol?.name || 'none'}, Sentiment: ${sentimentCol?.name || 'none'}`);
-    
-    let positive = 0, neutral = 0, negative = 0;
-    const reviewTexts = [];
-    const sampleReviews = [];
-    
-    for (let i = 1; i < lines.length; i++) {
-      const values = [];
-      let inQuote = false, current = '';
-      const row = lines[i];
-      
-      for (let j = 0; j < row.length; j++) {
-        const char = row[j];
-        if (char === '"') inQuote = !inQuote;
-        else if (char === ',' && !inQuote) { values.push(current); current = ''; }
-        else current += char;
+    const mlResponse = await axios.post(
+      `${mlServiceUrl}/analyze/dashboard-data`,
+      form,
+      {
+        headers: form.getHeaders(),
+        timeout: 300000, // 5 minutes timeout
       }
-      values.push(current);
-      
-      let sentiment = null;
-      if (sentimentCol && values[sentimentCol.index]) {
-        sentiment = values[sentimentCol.index].toLowerCase().trim();
-      } else if (ratingCol && values[ratingCol.index]) {
-        const rating = extractRating(values[ratingCol.index]);
-        if (rating !== null) sentiment = rating >= 4 ? 'positive' : (rating <= 2 ? 'negative' : 'neutral');
-      }
-      
-      if (sentiment === 'positive') positive++;
-      else if (sentiment === 'negative') negative++;
-      else if (sentiment === 'neutral') neutral++;
-      
-      let reviewText = '';
-      if (reviewCol && values[reviewCol.index]) reviewText = values[reviewCol.index];
-      if (reviewText && reviewText.trim()) {
-        reviewTexts.push(reviewText);
-        if (sampleReviews.length < 50) sampleReviews.push({ text: reviewText.substring(0, 500) });
-      }
-    }
+    );
     
-    const total = positive + neutral + negative;
+    console.log(`[ML] Response received: success=${mlResponse.data.success}`);
     
-    if (total === 0) {
-      fs.unlinkSync(req.file.path);
-      return res.status(400).json({ error: `No valid data found. Columns: ${headers.join(', ')}` });
-    }
-    
-    const avgRating = ((positive * 5 + neutral * 3 + negative * 1) / total).toFixed(1);
-    const complaints = extractComplaintsFromTexts(reviewTexts);
-    
-    console.log(`[ML] Results: P=${positive}, Neu=${neutral}, Neg=${negative}, Total=${total}`);
-    console.log(`[ML] Complaints: ${complaints.map(c => `${c.category}=${c.count}`).join(', ')}`);
-    
+    // Clean up uploaded file
     fs.unlinkSync(req.file.path);
     
+    if (!mlResponse.data.success) {
+      return res.status(400).json({ error: mlResponse.data.error || 'ML analysis failed' });
+    }
+    
+    // Create session for chat context
     const sessionId = `session_${Date.now()}`;
+    const analysisData = mlResponse.data;
+    
     chatSessions.set(sessionId, {
       id: sessionId,
       context: {
-        sentimentData: [{ name: 'Positive', value: positive }, { name: 'Neutral', value: neutral }, { name: 'Negative', value: negative }],
-        metrics: { total_reviews: total, avg_rating: parseFloat(avgRating) },
-        reviewTexts: reviewTexts.slice(0, 500)
-      }
+        sentimentData: analysisData.pieData || [],
+        metrics: analysisData.metrics || {},
+        complaintCategories: analysisData.complaintCategories || [],
+        clusters: analysisData.clusters || [],
+        topics: analysisData.topics || [],
+        reviewTexts: analysisData.sampleReviews || []
+      },
+      messages: [],
+      createdAt: new Date()
     });
     
     res.json({
       success: true,
-      sessionId,
-      data: {
-        pieData: [{ name: 'Positive', value: positive }, { name: 'Neutral', value: neutral }, { name: 'Negative', value: negative }],
-        metrics: { total_reviews: total, avg_rating: parseFloat(avgRating), detected_col: ratingCol?.name || sentimentCol?.name || 'auto' },
-        sampleReviews,
-        complaintCategories: complaints
-      }
+      sessionId: sessionId,
+      data: analysisData
     });
     
   } catch (error) {
-    console.error('[ML] Error:', error);
-    if (req.file && fs.existsSync(req.file.path)) fs.unlinkSync(req.file.path);
-    res.status(500).json({ error: error.message });
+    console.error('[ML] Error:', error.message);
+    if (req.file && fs.existsSync(req.file.path)) {
+      fs.unlinkSync(req.file.path);
+    }
+    
+    if (error.code === 'ECONNREFUSED') {
+      return res.status(503).json({ 
+        error: 'Python ML service is not running. Start it with: cd ml_service && python main.py' 
+      });
+    }
+    
+    if (error.code === 'ETIMEDOUT') {
+      return res.status(504).json({ 
+        error: 'Analysis timeout. Please try with a smaller CSV file.' 
+      });
+    }
+    
+    res.status(500).json({ error: error.message || 'Analysis failed' });
   }
 });
 
-app.get('/api/ml/health', (req, res) => { res.json({ status: 'healthy' }); });
-app.get('/api/user/subscription', (req, res) => { res.json({ subscriptionPlan: 'enterprise' }); });
+// Health check endpoints
+app.get('/api/ml/health', async (req, res) => {
+  try {
+    const mlServiceUrl = process.env.ML_SERVICE_URL || 'http://localhost:8000';
+    const response = await axios.get(`${mlServiceUrl}/health`, { timeout: 3000 });
+    res.json({ status: 'healthy', ml_service: response.data });
+  } catch (error) {
+    res.status(503).json({ status: 'unhealthy', error: 'ML service not reachable' });
+  }
+});
+
+app.get('/api/user/subscription', (req, res) => { 
+  res.json({ subscriptionPlan: 'enterprise' }); 
+});
 
 // ============ REPORT ROUTES ============
 app.post('/api/advanced/reports/generate', async (req, res) => {
   try {
     const ReportGenerator = require('./services/pdfGenerator');
-    const report = await ReportGenerator.generateReport(req.body.analysisData);
+    const { analysisData } = req.body;
+    if (!analysisData) {
+      return res.status(400).json({ error: 'analysisData required' });
+    }
+    const report = await ReportGenerator.generateReport(analysisData);
     res.json({ success: true, report });
   } catch (error) {
+    console.error('[Report] Error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
 app.get('/api/advanced/reports/download/:reportId', async (req, res) => {
   try {
+    const { reportId } = req.params;
     const reportsDir = path.join(__dirname, 'uploads/reports');
+    if (!fs.existsSync(reportsDir)) {
+      return res.status(404).json({ error: 'No reports found' });
+    }
     const files = fs.readdirSync(reportsDir);
-    const reportFile = files.find(f => f.startsWith(req.params.reportId));
-    if (!reportFile) return res.status(404).json({ error: 'Report not found' });
+    const reportFile = files.find(f => f.startsWith(reportId));
+    if (!reportFile) {
+      return res.status(404).json({ error: 'Report not found' });
+    }
     res.download(path.join(reportsDir, reportFile));
   } catch (error) {
+    console.error('[Download] Error:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-app.get('/api/advanced/blockchain/stats', (req, res) => { res.json({ statistics: { totalReviews: 0, totalBlocks: 0, chainValid: true } }); });
-app.post('/api/auth/login', (req, res) => { res.json({ token: 'mock_token', email: req.body.email, subscriptionPlan: 'enterprise' }); });
-app.post('/api/auth/register', (req, res) => { res.json({ token: 'mock_token', email: req.body.email, subscriptionPlan: req.body.subscriptionPlan || 'basic' }); });
-app.get('/api/status', (req, res) => { res.json({ status: "Online", database: "Connected" }); });
-app.get('/health', (req, res) => { res.json({ status: 'OK' }); });
+// ============ BLOCKCHAIN ROUTES ============
+app.get('/api/advanced/blockchain/stats', (req, res) => { 
+  res.json({ 
+    statistics: { 
+      totalReviews: 0, 
+      totalBlocks: 0, 
+      chainValid: true,
+      lastVerified: new Date().toISOString()
+    } 
+  }); 
+});
 
+// ============ AUTH ROUTES (Mock for demo) ============
+app.post('/api/auth/login', (req, res) => { 
+  res.json({ token: 'mock_token', email: req.body.email, subscriptionPlan: 'enterprise' }); 
+});
+
+app.post('/api/auth/register', (req, res) => { 
+  res.json({ token: 'mock_token', email: req.body.email, subscriptionPlan: req.body.subscriptionPlan || 'basic' }); 
+});
+
+// ============ HEALTH CHECKS ============
+app.get('/api/status', (req, res) => { 
+  res.json({ status: "Online", database: "Connected" }); 
+});
+
+app.get('/health', (req, res) => { 
+  res.json({ status: 'OK', timestamp: new Date().toISOString() }); 
+});
+
+// ============ START SERVER ============
 app.listen(PORT, async () => {
   console.log(`\n🚀 Server running on http://localhost:${PORT}`);
+  console.log(`📡 Upload API: http://localhost:${PORT}/api/ml/upload-analyze`);
+  console.log(`💬 Chat API: http://localhost:${PORT}/api/advanced/chat/conversation`);
+  console.log(`📄 Report API: http://localhost:${PORT}/api/advanced/reports/generate`);
+  console.log(`🔍 Health: http://localhost:${PORT}/health`);
+  
+  // Ensure directories exist
   const reportsDir = path.join(__dirname, 'uploads/reports');
-  if (!fs.existsSync(reportsDir)) fs.mkdirSync(reportsDir, { recursive: true });
-  try { await poolPromise; console.log("✅ Database Connected"); } catch(err) { console.error("❌ Database Error:", err.message); }
+  if (!fs.existsSync(reportsDir)) {
+    fs.mkdirSync(reportsDir, { recursive: true });
+    console.log(`📁 Created reports directory: ${reportsDir}`);
+  }
+  
+  try {
+    await poolPromise;
+    console.log("✅ Database Connected");
+  } catch(err) {
+    console.error("❌ Database Error:", err.message);
+  }
 });

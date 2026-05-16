@@ -1,24 +1,24 @@
 // backend/controllers/mlController.js
 // Real data flow - no hardcoded values
 
-const axios  = require('axios');
+const axios = require('axios');
 const multer = require('multer');
-const path   = require('path');
-const fs     = require('fs');
-const Groq   = require('groq-sdk');
+const path = require('path');
+const fs = require('fs');
+const FormData = require('form-data');
+const Groq = require('groq-sdk');
 
 const ML_SERVICE_URL = process.env.ML_SERVICE_URL || 'http://localhost:8000';
-const GROQ_API_KEY   = process.env.GROQ_API_KEY;
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
 
 // ─── In-memory store (replace with DB if needed) ──────────────────
-// Stores real analysis results per upload session
 const analysisStore = new Map();
 
 // ─── File Upload Config ───────────────────────────────────────────
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const dir = path.join(__dirname, '../uploads/csv');
-    fs.mkdirSync(dir, { recursive: true });
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     cb(null, dir);
   },
   filename: (req, file, cb) => {
@@ -28,7 +28,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB
+  limits: { fileSize: 20 * 1024 * 1024 }, // 20MB limit
   fileFilter: (req, file, cb) => {
     if (file.mimetype === 'text/csv' || file.originalname.endsWith('.csv')) {
       cb(null, true);
@@ -51,8 +51,6 @@ exports.uploadAndAnalyze = (req, res) => {
     const filePath = req.file.path;
 
     try {
-      // Forward the real CSV file to Python ML service
-      const FormData = require('form-data');
       const form = new FormData();
       form.append('file', fs.createReadStream(filePath), {
         filename: req.file.originalname,
@@ -64,7 +62,7 @@ exports.uploadAndAnalyze = (req, res) => {
         form,
         {
           headers: form.getHeaders(),
-          timeout: 60000, // 60s for large files
+          timeout: 300000, // 5 minutes timeout
         }
       );
 
@@ -74,7 +72,6 @@ exports.uploadAndAnalyze = (req, res) => {
         throw new Error(analysisData.detail || 'ML analysis failed');
       }
 
-      // Store the REAL analysis data for chat/PDF use
       const sessionId = `session_${Date.now()}`;
       analysisStore.set(sessionId, {
         ...analysisData.data,
@@ -82,7 +79,6 @@ exports.uploadAndAnalyze = (req, res) => {
         analyzedAt: new Date().toISOString(),
       });
 
-      // Clean up uploaded CSV after analysis
       fs.unlink(filePath, () => {});
 
       return res.json({
@@ -98,13 +94,20 @@ exports.uploadAndAnalyze = (req, res) => {
       if (error.code === 'ECONNREFUSED') {
         return res.status(503).json({
           success: false,
-          error: 'Python ML service is not running. Start it with: cd ml_service && uvicorn main:app --port 8000'
+          error: 'Python ML service is not running. Start it with: cd ml_service && python main.py'
+        });
+      }
+
+      if (error.code === 'ETIMEDOUT') {
+        return res.status(504).json({
+          success: false,
+          error: 'Analysis timeout. Please try with a smaller CSV file.'
         });
       }
 
       return res.status(500).json({
         success: false,
-        error: error.response?.data?.detail || error.message || 'Analysis failed'
+        error: error.response?.data?.error || error.message || 'Analysis failed'
       });
     }
   });
@@ -124,7 +127,6 @@ exports.getAnalysis = (req, res) => {
 exports.getInsights = async (req, res) => {
   const { sessionId, analysisData } = req.body;
 
-  // Get real data from store OR from request body
   let data = analysisData;
   if (sessionId && analysisStore.has(sessionId)) {
     data = analysisStore.get(sessionId);
@@ -138,7 +140,6 @@ exports.getInsights = async (req, res) => {
     const insights = await generateInsightsWithGroq(data);
     res.json({ success: true, insights });
   } catch (error) {
-    // Fallback: generate insights from real data without LLM
     const insights = generateLocalInsights(data);
     res.json({ success: true, insights, source: 'local' });
   }
@@ -152,7 +153,6 @@ exports.chatMessage = async (req, res) => {
     return res.status(400).json({ success: false, error: 'Message is required' });
   }
 
-  // Get the REAL analysis data for context
   let analysisData = null;
   if (sessionId && analysisStore.has(sessionId)) {
     analysisData = analysisStore.get(sessionId);
@@ -170,7 +170,6 @@ exports.chatMessage = async (req, res) => {
     res.json({ success: true, reply, source: 'groq' });
   } catch (error) {
     console.error('Groq chat error:', error.message);
-    // Fallback: answer from real data without LLM
     const reply = generateLocalChatReply(message, analysisData);
     res.json({ success: true, reply, source: 'local_fallback' });
   }
@@ -182,7 +181,6 @@ async function chatWithGroq(message, data, history) {
 
   const { metrics, complaintCategories, ratingDistribution, filename } = data;
 
-  // Build real data summary for the system prompt
   const topComplaints = (complaintCategories || [])
     .slice(0, 3)
     .map(c => `${c.category} (${c.count} mentions, ${c.percentage}%)`)
@@ -199,11 +197,11 @@ DO NOT make up numbers. If unsure, say so.
 File: ${filename || 'uploaded CSV'}
 Total Reviews: ${metrics.total_reviews}
 Average Rating: ${metrics.avg_rating}/5
-Positive: ${metrics.positive_count} (${metrics.positive_pct}%)
-Neutral:  ${metrics.neutral_count} (${metrics.neutral_pct}%)
-Negative: ${metrics.negative_count} (${metrics.negative_pct}%)
-Sentiment Score: ${metrics.sentiment_score}/100
-Risk Level: ${metrics.risk_level}
+Positive: ${metrics.positive_count || metrics.positive_pct}% 
+Neutral: ${metrics.neutral_count || metrics.neutral_pct}%
+Negative: ${metrics.negative_count || metrics.negative_pct}%
+Sentiment Score: ${metrics.sentiment_score || 0}/100
+Risk Level: ${metrics.risk_level || 'Unknown'}
 Top Complaints: ${topComplaints}
 Rating Distribution: ${ratingBreakdown}
 =========================
@@ -214,7 +212,7 @@ Give concise, data-driven answers. Cite the actual numbers above.`;
 
   const messages = [
     { role: 'system', content: systemPrompt },
-    ...history.slice(-6), // Last 3 exchanges
+    ...history.slice(-6),
     { role: 'user', content: message }
   ];
 
@@ -288,7 +286,7 @@ function generateLocalInsights(data) {
 }
 
 function generateLocalChatReply(message, data) {
-  const { metrics, complaintCategories, ratingDistribution } = data;
+  const { metrics, complaintCategories } = data;
   const q = message.toLowerCase();
 
   if (q.includes('complaint') || q.includes('issue') || q.includes('problem')) {
@@ -297,11 +295,11 @@ function generateLocalChatReply(message, data) {
         .map(c => `• ${c.category}: ${c.count} mentions (${c.percentage}%)`).join('\n');
       return `Top complaint categories from your ${metrics.total_reviews} reviews:\n${list}`;
     }
-    return `${metrics.negative_count} negative reviews (${metrics.negative_pct}%) found. Upload reviews with text for detailed complaint breakdown.`;
+    return `${metrics.negative_count || 0} negative reviews (${metrics.negative_pct}%) found. Upload reviews with text for detailed complaint breakdown.`;
   }
 
   if (q.includes('sentiment') || q.includes('feeling') || q.includes('opinion')) {
-    return `Sentiment breakdown:\n• Positive: ${metrics.positive_count} (${metrics.positive_pct}%)\n• Neutral: ${metrics.neutral_count} (${metrics.neutral_pct}%)\n• Negative: ${metrics.negative_count} (${metrics.negative_pct}%)\n\nOverall score: ${metrics.sentiment_score}/100`;
+    return `Sentiment breakdown:\n• Positive: ${metrics.positive_count || 0} (${metrics.positive_pct}%)\n• Neutral: ${metrics.neutral_count || 0} (${metrics.neutral_pct}%)\n• Negative: ${metrics.negative_count || 0} (${metrics.negative_pct}%)\n\nOverall score: ${metrics.sentiment_score || 0}/100`;
   }
 
   if (q.includes('rating') || q.includes('star') || q.includes('score')) {
