@@ -1,171 +1,170 @@
-const crypto = require('crypto');
+// backend/utils/blockchain.js
+// Fixed: Proper SHA-256 hashing with deep freeze for immutability
 
-/**
- * BLOCKCHAIN REVIEW INTEGRITY LEDGER
- * Stores hash of verified reviews for tamper detection
- * Uses JSON-based ledger (can be upgraded to Polygon/Ethereum)
- */
+const crypto = require('crypto');
 
 class BlockchainLedger {
   constructor() {
     this.chain = [];
-    this.initializeGenesisBlock();
+    this.pendingReviews = [];
   }
 
-  // Genesis Block - Foundation of the chain
-  initializeGenesisBlock() {
-    const genesisBlock = {
-      id: '0',
-      timestamp: new Date().toISOString(),
-      reviewHash: 'GENESIS_BLOCK',
-      previousHash: '0',
-      data: { message: 'ReviewMind Integrity Ledger Initialized' },
-      nonce: 0
-    };
-    genesisBlock.blockHash = this.createBlockHash(genesisBlock);
-    this.chain.push(genesisBlock);
+  // Deep freeze utility to prevent mutation after insertion
+  deepFreeze(obj) {
+    Object.freeze(obj);
+    Object.getOwnPropertyNames(obj).forEach(prop => {
+      if (obj[prop] !== null &&
+        (typeof obj[prop] === 'object' || typeof obj[prop] === 'function') &&
+        !Object.isFrozen(obj[prop])) {
+        this.deepFreeze(obj[prop]);
+      }
+    });
+    return obj;
   }
 
-  // Hash a review (SHA-256)
-  hashReview(reviewData) {
+  // Calculate hash of a block WITHOUT including the hash field itself
+  calculateBlockHash(block) {
+    const clone = { ...block };
+    delete clone.hash;
     return crypto
       .createHash('sha256')
-      .update(JSON.stringify(reviewData))
+      .update(JSON.stringify(clone))
       .digest('hex');
   }
 
-  // Create hash for block
-  createBlockHash(blockData) {
+  // Generate SHA-256 hash of any data
+  generateDataHash(data) {
     return crypto
       .createHash('sha256')
-      .update(JSON.stringify(blockData))
+      .update(JSON.stringify(data))
       .digest('hex');
   }
 
-  // Add verified review to chain
+  // Add review/analysis to blockchain with proper hash and immutability
   addReview(reviewData) {
-    try {
-      const reviewHash = this.hashReview(reviewData);
-      const previousBlock = this.chain[this.chain.length - 1];
-      
-      const newBlock = {
-        id: this.chain.length.toString(),
-        timestamp: new Date().toISOString(),
-        reviewHash: reviewHash,
-        previousHash: previousBlock.blockHash || this.createBlockHash(previousBlock),
-        data: {
-          review: reviewData,
-          verified: true,
-          verifiedAt: new Date().toISOString()
-        },
-        nonce: Math.floor(Math.random() * 1000000)
-      };
-
-      newBlock.blockHash = this.createBlockHash(newBlock);
-      this.chain.push(newBlock);
-
-      return {
-        success: true,
-        blockId: newBlock.id,
-        hash: reviewHash,
-        proof: newBlock.blockHash
-      };
-    } catch (error) {
-      return {
-        success: false,
-        error: error.message
-      };
-    }
-  }
-
-  // Verify review hasn't been tampered
-  verifyReview(reviewData, storedHash) {
-    const currentHash = this.hashReview(reviewData);
+    const timestamp = new Date().toISOString();
+    
+    const dataHash = this.generateDataHash(reviewData);
+    const previousHash = this.chain.length > 0 
+      ? this.chain[this.chain.length - 1].hash 
+      : '0'.repeat(64);
+    
+    const block = {
+      index: this.chain.length + 1,
+      timestamp,
+      data: {
+        reviewHash: dataHash,
+        summary: {
+          totalReviews: reviewData.metrics?.total_reviews,
+          avgRating: reviewData.metrics?.avg_rating,
+          sentimentScore: reviewData.metrics?.sentiment_score,
+          analyzedAt: reviewData.analyzedAt || timestamp
+        }
+      },
+      previousHash,
+      hash: null
+    };
+    
+    block.hash = this.calculateBlockHash(block);
+    
+    // Deep freeze to prevent mutation
+    const frozenBlock = this.deepFreeze(block);
+    this.chain.push(frozenBlock);
+    
     return {
-      isValid: currentHash === storedHash,
-      currentHash: currentHash,
-      storedHash: storedHash,
-      status: currentHash === storedHash ? 'VERIFIED' : 'TAMPERED'
+      success: true,
+      blockId: block.index,
+      hash: block.hash,
+      previousHash: block.previousHash,
+      timestamp: block.timestamp,
+      dataHash: dataHash,
+      chainLength: this.chain.length,
+      chainValid: this.validateChain(),
+      status: 'VERIFIED_ON_CHAIN'
     };
   }
 
-  // Validate entire chain integrity
+  verifyReview(reviewData, expectedHash) {
+    const calculatedHash = this.generateDataHash(reviewData);
+    return calculatedHash === expectedHash;
+  }
+
+  getReviewStatus(blockId) {
+    const block = this.chain.find(b => b.index === parseInt(blockId));
+    if (!block) {
+      return { found: false, error: 'Block not found' };
+    }
+    
+    return {
+      found: true,
+      blockId: block.index,
+      hash: block.hash,
+      previousHash: block.previousHash,
+      timestamp: block.timestamp,
+      dataHash: block.data.reviewHash,
+      verified: this.verifyBlockIntegrity(block)
+    };
+  }
+
+  verifyBlockIntegrity(block) {
+    const calculatedHash = this.calculateBlockHash(block);
+    return calculatedHash === block.hash;
+  }
+
   validateChain() {
+    if (this.chain.length > 0) {
+      const genesisBlock = this.chain[0];
+      if (genesisBlock.previousHash !== '0'.repeat(64)) {
+        console.error('Invalid genesis block previous hash');
+        return false;
+      }
+      if (!this.verifyBlockIntegrity(genesisBlock)) {
+        console.error('Genesis block hash mismatch');
+        return false;
+      }
+    }
+    
     for (let i = 1; i < this.chain.length; i++) {
       const currentBlock = this.chain[i];
       const previousBlock = this.chain[i - 1];
-
-      // Verify current block hash
-      const calculatedHash = this.createBlockHash({
-        id: currentBlock.id,
-        timestamp: currentBlock.timestamp,
-        reviewHash: currentBlock.reviewHash,
-        previousHash: currentBlock.previousHash,
-        data: currentBlock.data,
-        nonce: currentBlock.nonce
-      });
-
-      if (calculatedHash !== currentBlock.blockHash) {
-        return {
-          isValid: false,
-          error: `Block ${i} has been tampered`,
-          blockId: currentBlock.id
-        };
+      
+      if (!this.verifyBlockIntegrity(currentBlock)) {
+        console.error(`Block ${i} hash mismatch`);
+        return false;
       }
-
-      // Verify previous hash matches
-      if (currentBlock.previousHash !== previousBlock.blockHash) {
-        return {
-          isValid: false,
-          error: `Block ${i} previous hash doesn't match`,
-          blockId: currentBlock.id
-        };
+      
+      if (currentBlock.previousHash !== previousBlock.hash) {
+        console.error(`Block ${i} previous hash mismatch`);
+        return false;
       }
     }
-
-    return {
-      isValid: true,
-      chainLength: this.chain.length,
-      message: 'Blockchain integrity verified'
-    };
+    return true;
   }
 
-  // Get review verification status
-  getReviewStatus(blockId) {
-    const block = this.chain.find(b => b.id === blockId);
-    if (!block) {
-      return { error: 'Review not found on chain' };
-    }
-
-    return {
-      blockId: block.id,
-      timestamp: block.timestamp,
-      hash: block.reviewHash,
-      verified: block.data.verified,
-      verifiedAt: block.data.verifiedAt,
-      chainValid: this.validateChain().isValid
-    };
-  }
-
-  // Get chain statistics
   getChainStats() {
     return {
       totalBlocks: this.chain.length,
-      totalReviews: this.chain.length - 1, // Exclude genesis block
-      chainValid: this.validateChain().isValid,
-      lastBlockTime: this.chain[this.chain.length - 1].timestamp
+      chainValid: this.validateChain(),
+      lastBlock: this.chain.length > 0 ? {
+        index: this.chain[this.chain.length - 1].index,
+        hash: this.chain[this.chain.length - 1].hash,
+        timestamp: this.chain[this.chain.length - 1].timestamp
+      } : null,
+      genesisBlock: this.chain.length > 0 ? {
+        index: this.chain[0].index,
+        hash: this.chain[0].hash,
+        timestamp: this.chain[0].timestamp
+      } : null
     };
+  }
+
+  getBlockByHash(hash) {
+    return this.chain.find(b => b.hash === hash) || null;
+  }
+
+  getBlockByIndex(index) {
+    return this.chain.find(b => b.index === index) || null;
   }
 }
 
-// Create singleton instance
-const ledger = new BlockchainLedger();
-
-module.exports = {
-  blockchain: ledger,
-  addReview: (reviewData) => ledger.addReview(reviewData),
-  verifyReview: (reviewData, hash) => ledger.verifyReview(reviewData, hash),
-  validateChain: () => ledger.validateChain(),
-  getReviewStatus: (blockId) => ledger.getReviewStatus(blockId),
-  getChainStats: () => ledger.getChainStats()
-};
+module.exports = new BlockchainLedger();

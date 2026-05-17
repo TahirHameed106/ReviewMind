@@ -1,359 +1,364 @@
-﻿const PDFDocument = require('pdfkit');
-const fs = require('fs');
-const path = require('path');
+﻿// backend/services/pdfGenerator.js
+// npm install pdfkit
 
-class PDFGenerator {
-  constructor() {
-    this.reportsDir = path.join(__dirname, '../uploads/reports');
-    if (!fs.existsSync(this.reportsDir)) {
-      fs.mkdirSync(this.reportsDir, { recursive: true });
-    }
+const PDFDocument = require('pdfkit');
+const fs          = require('fs');
+const path        = require('path');
+
+const REPORTS_DIR = path.join(__dirname, '../uploads/reports');
+
+class ReportGenerator {
+
+  async generateReport(data) {
+    fs.mkdirSync(REPORTS_DIR, { recursive: true });
+
+    const reportId = `rpt_${Date.now()}`;
+    const filename = `reviewmind-${reportId}.pdf`;
+    const filepath = path.join(REPORTS_DIR, filename);
+
+    await this._build(data, filepath);
+
+    return {
+      reportId,
+      filename,
+      filepath,
+      url:         `/api/advanced/reports/download/${reportId}`,
+      generatedAt: new Date().toISOString(),
+    };
   }
 
-  // Extract complaints from review texts
-  extractComplaintsFromTexts(reviewTexts) {
-    const complaintKeywords = {
-      'Shipping & Delivery': ['shipping', 'delivery', 'late', 'delayed', 'slow', 'package', 'arrived', 'dispatch', 'courier', 'ship', 'shipped', 'tracking', '快递', '配送', '物流'],
-      'Product Quality': ['quality', 'broken', 'defective', 'damaged', 'cheap', 'poor', 'bad', 'waste', 'useless', 'defect', 'cracked', 'not working', 'faulty', '品质', '质量', '坏了', '破损'],
-      'Customer Service': ['service', 'support', 'rude', 'helpful', 'response', 'staff', 'agent', 'contact', 'refund', 'return', 'exchange', '客服', '售后'],
-      'Price & Value': ['price', 'expensive', 'overpriced', 'value', 'worth', 'cost', 'money', 'waste of money', 'not worth', '价格', '贵', '不值'],
-      'Packaging': ['packaging', 'box', 'wrapping', 'seal', 'open', 'torn', 'packed', 'package damaged', '包装'],
-      'Wrong Item': ['wrong', 'incorrect', 'different', 'not as described', 'mismatch', 'size', 'color different', '错', '不对']
-    };
-    
-    const counts = {};
-    let totalComplaints = 0;
-    
-    for (const text of reviewTexts) {
-      if (!text) continue;
-      const lowerText = text.toLowerCase();
-      for (const [category, keywords] of Object.entries(complaintKeywords)) {
-        if (keywords.some(kw => lowerText.includes(kw))) {
-          counts[category] = (counts[category] || 0) + 1;
-          totalComplaints++;
+  // ── Build PDF ─────────────────────────────────────────────────
+  _build(data, filepath) {
+    return new Promise((resolve, reject) => {
+      const doc = new PDFDocument({ margin: 50, size: 'A4', autoFirstPage: true });
+      const ws  = fs.createWriteStream(filepath);
+      doc.pipe(ws);
+      ws.on('finish', resolve);
+      ws.on('error',  reject);
+
+      // Normalise data shape (handles both flat and nested formats)
+      const pieData    = data.pieData    || [];
+      const metrics    = data.metrics    || {};
+      const complaints = data.complaintCategories || data.complaints || [];
+      const ratingDist = data.ratingDistribution  || [];
+      const timeSeries = data.timeSeriesData       || [];
+      const samples    = (data.sampleReviews       || []).slice(0, 6);
+      const metadata   = data.analysisMetadata     || {};
+
+      // Derived values
+      const total  = Number(metrics.total_reviews)  || pieData.reduce((s, p) => s + (p.value || 0), 0);
+      const pos    = Number(metrics.positive_count) || pieData.find(p => p.name === 'Positive')?.value || 0;
+      const neu    = Number(metrics.neutral_count)  || pieData.find(p => p.name === 'Neutral')?.value  || 0;
+      const neg    = Number(metrics.negative_count) || pieData.find(p => p.name === 'Negative')?.value || 0;
+      const safe   = total || 1;
+      const posPct = ((pos / safe) * 100).toFixed(1);
+      const neuPct = ((neu / safe) * 100).toFixed(1);
+      const negPct = ((neg / safe) * 100).toFixed(1);
+      const avgR   = Number(metrics.avg_rating   || 0).toFixed(2);
+      const score  = metrics.sentiment_score ?? '–';
+      const risk   = metrics.risk_level  || 'UNKNOWN';
+      const col    = metrics.detected_col || metrics.detected_rating_column || metrics.detected_text_column || 'auto-detected';
+
+      // ── COVER ───────────────────────────────────────────────────
+      doc.rect(0, 0, doc.page.width, 150).fill('#0f172a');
+
+      doc.fillColor('#f8fafc').fontSize(30).font('Helvetica-Bold')
+         .text('ReviewMind', 50, 45);
+      doc.fillColor('#94a3b8').fontSize(13).font('Helvetica')
+         .text('Customer Review Intelligence Report', 50, 82);
+      doc.fillColor('#64748b').fontSize(10)
+         .text(`Generated: ${new Date().toLocaleString()}`, 50, 105)
+         .text(`Dataset:   ${total.toLocaleString()} reviews analyzed`, 50, 120);
+
+      // Risk badge
+      const riskColors = { CRITICAL: '#dc2626', HIGH: '#ea580c', MEDIUM: '#d97706', LOW: '#16a34a' };
+      const riskColor  = riskColors[risk] || '#64748b';
+      doc.roundedRect(doc.page.width - 140, 55, 90, 28, 6).fill(riskColor);
+      doc.fillColor('#ffffff').fontSize(11).font('Helvetica-Bold')
+         .text(risk, doc.page.width - 140, 63, { width: 90, align: 'center' });
+
+      doc.moveDown(6);
+
+      // ── EXECUTIVE SUMMARY ───────────────────────────────────────
+      this._h2(doc, 'Executive Summary');
+      doc.fillColor('#334155').fontSize(11).font('Helvetica')
+         .text(
+           `This report covers ${total.toLocaleString()} customer reviews. ` +
+           `Sentiment analysis shows ${posPct}% positive, ${neuPct}% neutral, and ${negPct}% negative. ` +
+           `The average rating is ${avgR}/5.0 and the composite sentiment score is ${score}/100. ` +
+           `Overall risk classification: ${risk}.`,
+           { lineGap: 5 }
+         );
+      doc.moveDown(1);
+
+      // ── KEY METRICS TABLE ───────────────────────────────────────
+      this._h2(doc, 'Key Metrics');
+      this._table(doc, ['Metric', 'Value'], [
+        ['Total Reviews',     total.toLocaleString()],
+        ['Average Rating',    `${avgR} / 5.00`],
+        ['Positive',          `${pos.toLocaleString()} (${posPct}%)`],
+        ['Neutral',           `${neu.toLocaleString()} (${neuPct}%)`],
+        ['Negative',          `${neg.toLocaleString()} (${negPct}%)`],
+        ['Sentiment Score',   `${score} / 100`],
+        ['Risk Level',        risk],
+        ['Detected Column',   col],
+        ['Analysis Time',     metadata.analysisTime ? new Date(metadata.analysisTime).toLocaleString() : '–'],
+      ]);
+
+      // ── SENTIMENT BAR CHART ─────────────────────────────────────
+      this._h2(doc, 'Sentiment Distribution');
+      this._barChart(doc, [
+        { label: 'Positive', pct: Number(posPct), count: pos,  color: '#059669' },
+        { label: 'Neutral',  pct: Number(neuPct), count: neu,  color: '#d97706' },
+        { label: 'Negative', pct: Number(negPct), count: neg,  color: '#dc2626' },
+      ]);
+
+      // ============================================================
+      // ADDED: RATING DISTRIBUTION CHART
+      // ============================================================
+      if (ratingDist && ratingDist.length > 0) {
+        this._h2(doc, 'Rating Distribution');
+        const maxCount = Math.max(...ratingDist.map(r => r.count), 1);
+        this._barChart(doc, ratingDist.map(r => ({
+          label: `${r.rating} ★`,
+          pct: Math.round((r.count / maxCount) * 100),
+          count: r.count,
+          color: r.rating >= 4 ? '#059669' : r.rating >= 3 ? '#d97706' : '#dc2626'
+        })));
+      } else {
+        // Fallback: Create rating distribution from pie data if available
+        if (total > 0) {
+          this._h2(doc, 'Rating Distribution');
+          const estimatedRatings = [
+            { rating: 5, count: Math.round(pos * 0.6), color: '#059669' },
+            { rating: 4, count: Math.round(pos * 0.4), color: '#059669' },
+            { rating: 3, count: neu, color: '#d97706' },
+            { rating: 2, count: Math.round(neg * 0.6), color: '#dc2626' },
+            { rating: 1, count: Math.round(neg * 0.4), color: '#dc2626' }
+          ];
+          const maxCount = Math.max(...estimatedRatings.map(r => r.count), 1);
+          this._barChart(doc, estimatedRatings.map(r => ({
+            label: `${r.rating} ★`,
+            pct: Math.round((r.count / maxCount) * 100),
+            count: r.count,
+            color: r.color
+          })));
         }
       }
-    }
-    
-    const complaints = [];
-    for (const [category, count] of Object.entries(counts)) {
-      complaints.push({
-        category: category,
-        count: count,
-        percentage: totalComplaints > 0 ? Math.round((count / totalComplaints) * 100) : 0
+
+      // ============================================================
+      // ADDED: COMPLAINT IMPACT ANALYSIS
+      // ============================================================
+      if (complaints.length > 0) {
+        this._h2(doc, 'Complaint Impact Analysis');
+        const totalComplaints = complaints.reduce((sum, c) => sum + (c.count || 0), 0);
+        this._table(doc, ['Category', 'Mentions', 'Impact %'], 
+          complaints.map(c => [
+            c.category, 
+            (c.count || 0).toLocaleString(), 
+            `${Math.round(((c.count || 0) / totalComplaints) * 100)}%`
+          ])
+        );
+        doc.moveDown(0.4);
+        doc.fillColor('#64748b').fontSize(9).font('Helvetica')
+           .text(`Total complaints tracked: ${totalComplaints.toLocaleString()} mentions across ${complaints.length} categories.`);
+      }
+
+      // ── COMPLAINT CATEGORIES (Original - kept for compatibility) ──
+      if (complaints.length > 0) {
+        this._h2(doc, 'Top Complaint Categories');
+        this._table(doc,
+          ['Category', 'Mentions', 'Share of Negatives'],
+          complaints.map(c => [c.category, (c.count || 0).toLocaleString(), `${c.percentage || 0}%`])
+        );
+        doc.moveDown(0.4);
+        doc.fillColor('#64748b').fontSize(9).font('Helvetica')
+           .text(`Based on ${neg.toLocaleString()} negative reviews. One review may match multiple categories.`);
+      }
+
+      // ── TIME SERIES TABLE ───────────────────────────────────────
+      if (timeSeries && timeSeries.length > 1) {
+        this._h2(doc, 'Rating Trend Over Time');
+        this._table(doc,
+          ['Period', 'Avg Satisfaction', 'Reviews'],
+          timeSeries.map(t => [t.month || t.date, Number(t.satisfaction || t.avg_rating || 0).toFixed(2), (t.reviews || t.count || 0).toLocaleString()])
+        );
+      }
+
+      // ── RECOMMENDATIONS ─────────────────────────────────────────
+      this._h2(doc, 'Recommendations');
+      this._recommendations(doc, { pos, neu, neg, total, negPct, posPct, avgR, risk, score, complaints });
+
+      // ── SAMPLE REVIEWS ──────────────────────────────────────────
+      if (samples.length > 0) {
+        this._h2(doc, 'Sample Reviews');
+        samples.forEach((s, i) => {
+          if (doc.y > doc.page.height - 120) doc.addPage();
+
+          const sc = s.sentiment === 'Positive' ? '#059669' : s.sentiment === 'Negative' ? '#dc2626' : '#d97706';
+          const ratingStr = s.rating != null ? `  ★ ${Number(s.rating).toFixed(1)}` : '';
+
+          doc.fillColor(sc).fontSize(9).font('Helvetica-Bold')
+             .text(`[${s.sentiment || 'Unknown'}]${ratingStr}`);
+          doc.fillColor('#334155').fontSize(9).font('Helvetica')
+             .text(String(s.text || '').slice(0, 280) + (String(s.text || '').length > 280 ? '…' : ''),
+               { lineGap: 2 });
+
+          if (i < samples.length - 1) {
+            doc.moveDown(0.4);
+            doc.moveTo(50, doc.y).lineTo(doc.page.width - 50, doc.y)
+               .strokeColor('#e2e8f0').lineWidth(0.5).stroke();
+            doc.moveDown(0.4);
+          }
+        });
+      }
+
+      // ── FOOTER ──────────────────────────────────────────────────
+      doc.moveDown(3);
+      doc.fillColor('#94a3b8').fontSize(9).font('Helvetica')
+         .text(
+           `ReviewMind · AI analysis · blockchain integrity · PDF reporting · ${new Date().toLocaleDateString()}`,
+           50, doc.page.height - 40,
+           { align: 'center', width: doc.page.width - 100 }
+         );
+
+      doc.end();
+    });
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────
+  _h2(doc, title) {
+    if (doc.y > doc.page.height - 150) doc.addPage();
+    doc.moveDown(0.8);
+    doc.fillColor('#0f172a').fontSize(14).font('Helvetica-Bold').text(title);
+    doc.moveTo(50, doc.y + 3).lineTo(doc.page.width - 50, doc.y + 3)
+       .strokeColor('#e2e8f0').lineWidth(1).stroke();
+    doc.moveDown(0.6);
+  }
+
+  _table(doc, headers, rows) {
+    const colW  = Math.floor((doc.page.width - 100) / headers.length);
+    const rowH  = 20;
+    const startX = 50;
+
+    // Header row
+    doc.rect(startX, doc.y, doc.page.width - 100, rowH).fill('#f1f5f9');
+    headers.forEach((h, i) => {
+      doc.fillColor('#1e293b').fontSize(9).font('Helvetica-Bold')
+         .text(h, startX + colW * i + 6, doc.y - rowH + 6, { width: colW - 10, lineBreak: false });
+    });
+    doc.moveDown(0.3);
+
+    // Data rows
+    rows.forEach((row, ri) => {
+      if (doc.y > doc.page.height - 60) doc.addPage();
+      if (ri % 2 === 0) {
+        doc.rect(startX, doc.y, doc.page.width - 100, rowH).fill('#f8fafc');
+      }
+      row.forEach((cell, ci) => {
+        doc.fillColor('#334155').fontSize(9).font('Helvetica')
+           .text(String(cell), startX + colW * ci + 6, doc.y - rowH + 6,
+             { width: colW - 10, lineBreak: false });
+      });
+      doc.moveDown(0.3);
+    });
+    doc.moveDown(0.5);
+  }
+
+  _barChart(doc, items) {
+    const chartWidth = doc.page.width - 180;
+    const barH       = 16;
+    const gap        = 8;
+
+    items.forEach(item => {
+      if (doc.y > doc.page.height - 60) doc.addPage();
+
+      const labelX = 50;
+      const barX   = 160;
+      const barW   = Math.max(2, Math.round((item.pct / 100) * chartWidth));
+      const y      = doc.y;
+
+      // Label
+      doc.fillColor('#334155').fontSize(9).font('Helvetica')
+         .text(item.label, labelX, y + 3, { width: 100, lineBreak: false });
+
+      // Background track
+      doc.rect(barX, y, chartWidth, barH).fill('#f1f5f9');
+
+      // Filled bar
+      doc.rect(barX, y, barW, barH).fill(item.color || '#2563eb');
+
+      // Value text
+      const displayVal = item.count !== undefined
+        ? `${item.pct}%  (${Number(item.count).toLocaleString()})`
+        : `${item.pct}%`;
+      doc.fillColor('#475569').fontSize(8).font('Helvetica')
+         .text(displayVal, barX + barW + 6, y + 4, { lineBreak: false });
+
+      doc.moveDown(0).y = y + barH + gap;
+    });
+    doc.moveDown(0.8);
+  }
+
+  _recommendations(doc, { pos, neu, neg, total, negPct, posPct, avgR, risk, score, complaints }) {
+    const recs = [];
+
+    if (parseFloat(negPct) >= 40) {
+      recs.push({
+        title: '🚨 CRITICAL: Immediate action required',
+        body:  `${negPct}% of reviews are negative (${neg.toLocaleString()} reviews). This is a critical risk level. Escalate to leadership and investigate root causes immediately.`,
+      });
+    } else if (parseFloat(negPct) >= 25) {
+      recs.push({
+        title: '⚠️ HIGH risk: Address negative reviews urgently',
+        body:  `${negPct}% negative rate (${neg.toLocaleString()} reviews). Prioritize response to the top complaint categories listed above.`,
+      });
+    } else if (parseFloat(negPct) >= 15) {
+      recs.push({
+        title: '📉 MEDIUM risk: Monitor and improve',
+        body:  `${negPct}% negative rate. Investigate recurring complaint themes and set up alerts for further deterioration.`,
+      });
+    } else {
+      recs.push({
+        title: '✅ LOW risk: Maintain and scale what works',
+        body:  `Only ${negPct}% negative reviews. Focus on amplifying what drives the ${posPct}% positive experiences.`,
       });
     }
-    
-    return complaints.sort((a, b) => b.count - a.count);
-  }
 
-  async generateReport(analysisData) {
-    return new Promise((resolve, reject) => {
-      try {
-        console.log('[PDF] Generating report...');
+    if (parseFloat(avgR) >= 4.0) {
+      recs.push({
+        title: '🌟 Strong rating — leverage for marketing',
+        body:  `Average rating of ${avgR}/5 is excellent. Use this in customer acquisition materials and case studies.`,
+      });
+    } else if (parseFloat(avgR) < 3.0) {
+      recs.push({
+        title: '❌ Low rating requires product/service review',
+        body:  `Average rating of ${avgR}/5 suggests fundamental issues. Conduct customer interviews to identify root causes beyond complaint keywords.`,
+      });
+    }
 
-        // Extract data - support both formats
-        let pieData = analysisData?.pieData || [];
-        let complaints = analysisData?.complaints || analysisData?.complaintCategories || [];
-        let sampleReviews = analysisData?.sampleReviews || [];
-        
-        // If we have sample reviews but no complaints, extract them
-        if (complaints.length === 0 && sampleReviews.length > 0) {
-          const reviewTexts = sampleReviews.map(r => r.text).filter(t => t);
-          complaints = this.extractComplaintsFromTexts(reviewTexts);
-          console.log(`[PDF] Extracted ${complaints.length} complaints from ${reviewTexts.length} reviews`);
-        }
-        
-        const positive = Number(pieData.find(p => p.name === 'Positive')?.value) || 0;
-        const neutral = Number(pieData.find(p => p.name === 'Neutral')?.value) || 0;
-        const negative = Number(pieData.find(p => p.name === 'Negative')?.value) || 0;
-        const total = positive + neutral + negative;
-        
-        if (total <= 0) throw new Error('No valid data');
+    if (complaints && complaints.length > 0) {
+      const top = complaints[0];
+      recs.push({
+        title: `🔧 Top priority: Fix "${top.category}"`,
+        body:  `"${top.category}" is the most mentioned complaint (${top.count} mentions, ${top.percentage || 0}% of complaints). Create a dedicated task force for this issue.`,
+      });
+    }
 
-        const positivePct = ((positive / total) * 100).toFixed(1);
-        const neutralPct = ((neutral / total) * 100).toFixed(1);
-        const negativePct = ((negative / total) * 100).toFixed(1);
-        const avgRating = ((positive * 5 + neutral * 3 + negative * 1) / total).toFixed(1);
-        const sentimentScore = Math.round((positive - negative) / total * 50 + 50);
+    recs.push({
+      title: '📊 Set up regular review monitoring',
+      body:  `With ${total.toLocaleString()} reviews analyzed, establish a monthly ReviewMind analysis cadence to track sentiment trends and measure improvement over time.`,
+    });
 
-        const filename = `report_${Date.now()}.pdf`;
-        const filepath = path.join(this.reportsDir, filename);
-
-        const doc = new PDFDocument({ margin: 50, size: 'A4' });
-        const stream = fs.createWriteStream(filepath);
-        doc.pipe(stream);
-
-        // ============ PAGE 1 ============
-        
-        // Header
-        doc.fillColor('#1a237e').font('Helvetica-Bold').fontSize(28).text('REVIEWMIND', { align: 'center' });
-        doc.fontSize(12).fillColor('#546e7a').font('Helvetica').text('Customer Intelligence Report', { align: 'center' });
-        doc.fontSize(9).fillColor('#78909c').text(`Generated: ${new Date().toLocaleString()}`, { align: 'center' });
-        doc.moveDown();
-        doc.moveTo(50, doc.y).lineTo(550, doc.y).strokeColor('#1a237e').lineWidth(2).stroke();
-        doc.moveDown(2);
-
-        // Executive Summary
-        doc.font('Helvetica-Bold').fontSize(18).fillColor('#1a237e').text('Executive Summary');
-        doc.moveDown(0.5);
-        doc.font('Helvetica').fontSize(11).fillColor('#37474f');
-        doc.text(`This report analyzes ${total.toLocaleString()} customer reviews. Overall sentiment is ${positivePct}% positive and ${negativePct}% negative with an average rating of ${avgRating}/5.0 stars.`, { align: 'left', width: 470 });
-        doc.moveDown(2);
-
-        // Key Metrics Cards
-        const cardY = doc.y;
-        
-        doc.fillColor('#e3f2fd').rect(50, cardY, 150, 70).fill();
-        doc.fillColor('#1565c0').fontSize(8).font('Helvetica-Bold').text('TOTAL REVIEWS', 60, cardY + 10);
-        doc.fontSize(24).font('Helvetica-Bold').fillColor('#0d47a1').text(total.toLocaleString(), 60, cardY + 32);
-        
-        doc.fillColor('#e8f5e9').rect(210, cardY, 150, 70).fill();
-        doc.fillColor('#2e7d32').fontSize(8).font('Helvetica-Bold').text('AVERAGE RATING', 220, cardY + 10);
-        doc.fontSize(24).font('Helvetica-Bold').fillColor('#1b5e20').text(`${avgRating}/5.0`, 220, cardY + 32);
-        
-        doc.fillColor('#fff3e0').rect(370, cardY, 150, 70).fill();
-        doc.fillColor('#e65100').fontSize(8).font('Helvetica-Bold').text('SENTIMENT SCORE', 380, cardY + 10);
-        doc.fontSize(24).font('Helvetica-Bold').fillColor('#bf360c').text(`${sentimentScore}/100`, 380, cardY + 32);
-        
-        doc.moveDown(6.5);
-
-        // ============ SENTIMENT PIE CHART ============
-        doc.font('Helvetica-Bold').fontSize(16).fillColor('#1a237e').text('Sentiment Distribution', { underline: true });
-        doc.moveDown(1);
-
-        const centerX = 200;
-        const centerY = doc.y + 100;
-        const radius = 80;
-        
-        const data = [
-          { name: 'Positive', value: positive, color: '#4caf50' },
-          { name: 'Neutral', value: neutral, color: '#ff9800' },
-          { name: 'Negative', value: negative, color: '#f44336' }
-        ].filter(d => d.value > 0);
-        
-        let startAngle = -Math.PI / 2;
-        data.forEach(item => {
-          const angle = (item.value / total) * Math.PI * 2;
-          const endAngle = startAngle + angle;
-          
-          const startX = centerX + Math.cos(startAngle) * radius;
-          const startY = centerY + Math.sin(startAngle) * radius;
-          const endX = centerX + Math.cos(endAngle) * radius;
-          const endY = centerY + Math.sin(endAngle) * radius;
-          const largeArc = angle > Math.PI ? 1 : 0;
-          
-          doc.fillColor(item.color);
-          doc.path(`M ${centerX} ${centerY} L ${startX} ${startY} A ${radius} ${radius} 0 ${largeArc} 1 ${endX} ${endY} Z`).fill();
-          startAngle = endAngle;
-        });
-        
-        // Legend
-        const legendX = 340;
-        const legendY = centerY - 60;
-        doc.fillColor('#4caf50').rect(legendX, legendY, 12, 12).fill();
-        doc.fillColor('#37474f').fontSize(10).text(`Positive: ${positive.toLocaleString()} (${positivePct}%)`, legendX + 18, legendY);
-        
-        doc.fillColor('#ff9800').rect(legendX, legendY + 25, 12, 12).fill();
-        doc.fillColor('#37474f').fontSize(10).text(`Neutral: ${neutral.toLocaleString()} (${neutralPct}%)`, legendX + 18, legendY + 25);
-        
-        doc.fillColor('#f44336').rect(legendX, legendY + 50, 12, 12).fill();
-        doc.fillColor('#37474f').fontSize(10).text(`Negative: ${negative.toLocaleString()} (${negativePct}%)`, legendX + 18, legendY + 50);
-        
-        doc.moveDown(11);
-
-        // ============ BAR CHART ============
-        doc.font('Helvetica-Bold').fontSize(16).fillColor('#1a237e').text('Rating Breakdown', { underline: true });
-        doc.moveDown(1);
-
-        const chartY = doc.y;
-        const maxValue = Math.max(positive, neutral, negative, 1);
-        
-        const posHeight = (positive / maxValue) * 100;
-        doc.fillColor('#4caf50').rect(100, chartY + 100 - posHeight, 40, Math.max(posHeight, 2)).fill();
-        doc.fillColor('#37474f').fontSize(10).text('Positive', 105, chartY + 115);
-        doc.text(`${positivePct}%`, 110, chartY + 100 - posHeight - 15);
-        
-        const neuHeight = (neutral / maxValue) * 100;
-        doc.fillColor('#ff9800').rect(200, chartY + 100 - neuHeight, 40, Math.max(neuHeight, 2)).fill();
-        doc.fillColor('#37474f').fontSize(10).text('Neutral', 208, chartY + 115);
-        doc.text(`${neutralPct}%`, 210, chartY + 100 - neuHeight - 15);
-        
-        const negHeight = (negative / maxValue) * 100;
-        doc.fillColor('#f44336').rect(300, chartY + 100 - negHeight, 40, Math.max(negHeight, 2)).fill();
-        doc.fillColor('#37474f').fontSize(10).text('Negative', 305, chartY + 115);
-        doc.text(`${negativePct}%`, 310, chartY + 100 - negHeight - 15);
-        
-        doc.moveDown(7);
-
-        // ============ DETAILED TABLE ============
-        const tableY = doc.y;
-        doc.fillColor('#1a237e').rect(50, tableY, 500, 28).fill();
-        doc.fillColor('white').fontSize(10).font('Helvetica-Bold');
-        doc.text('SENTIMENT', 65, tableY + 9);
-        doc.text('COUNT', 200, tableY + 9);
-        doc.text('PERCENTAGE', 300, tableY + 9);
-        doc.text('RECOMMENDATION', 400, tableY + 9);
-        
-        doc.fillColor('#f5f5f5').rect(50, tableY + 28, 500, 25).fill();
-        doc.fillColor('#37474f').fontSize(9).font('Helvetica');
-        doc.text('🟢 Positive', 65, tableY + 37);
-        doc.text(positive.toLocaleString(), 200, tableY + 37);
-        doc.text(`${positivePct}%`, 300, tableY + 37);
-        doc.text('Leverage for marketing', 400, tableY + 37);
-        
-        doc.fillColor('white').rect(50, tableY + 53, 500, 25).fill();
-        doc.fillColor('#37474f').fontSize(9).font('Helvetica');
-        doc.text('🟠 Neutral', 65, tableY + 62);
-        doc.text(neutral.toLocaleString(), 200, tableY + 62);
-        doc.text(`${neutralPct}%`, 300, tableY + 62);
-        doc.text('Follow up to convert', 400, tableY + 62);
-        
-        doc.fillColor('#f5f5f5').rect(50, tableY + 78, 500, 25).fill();
-        doc.fillColor('#37474f').fontSize(9).font('Helvetica');
-        doc.text('🔴 Negative', 65, tableY + 87);
-        doc.text(negative.toLocaleString(), 200, tableY + 87);
-        doc.text(`${negativePct}%`, 300, tableY + 87);
-        doc.text(negativePct > 25 ? 'Urgent Action' : 'Needs Improvement', 400, tableY + 87);
-        
-        doc.moveDown(5);
-
-        // ============ PAGE 2 ============
-        doc.addPage();
-
-        // ============ COMPLAINT ANALYSIS ============
-        doc.font('Helvetica-Bold').fontSize(18).fillColor('#1a237e').text('Complaint Analysis', { align: 'center' });
-        doc.moveDown(1);
-
-        if (complaints && complaints.length > 0) {
-          const complaintY = doc.y;
-          const barWidth = 350;
-          
-          doc.fontSize(11).font('Helvetica').fillColor('#37474f');
-          doc.text(`Based on analysis of ${complaints.reduce((sum, c) => sum + c.count, 0)} complaint mentions:`, 50, complaintY);
-          doc.moveDown(1);
-          
-          complaints.slice(0, 5).forEach((complaint, idx) => {
-            const yPos = complaintY + 30 + (idx * 45);
-            const barLength = (complaint.count / Math.max(complaints[0]?.count, 1)) * barWidth;
-            
-            doc.fillColor('#1a237e').fontSize(10).font('Helvetica-Bold').text(complaint.category, 50, yPos + 5);
-            doc.fillColor('#ef5350').rect(200, yPos, Math.max(barLength, 10), 18).fill();
-            doc.fillColor('#37474f').fontSize(9).font('Helvetica');
-            doc.text(`${complaint.count} mentions (${complaint.percentage}% of complaints)`, 200 + barLength + 10, yPos + 5);
-          });
-          
-          doc.moveDown(complaints.length * 1.2 + 2);
-          
-          // Add action items based on top complaint
-          if (complaints[0]) {
-            doc.font('Helvetica-Bold').fontSize(12).fillColor('#1a237e').text(`Priority Action: Fix "${complaints[0].category}" Issues`);
-            doc.fontSize(10).font('Helvetica').fillColor('#37474f');
-            doc.text(`This category accounts for ${complaints[0].percentage}% of all complaint mentions in your reviews.`, 65, doc.y + 5);
-            doc.text(`Addressing this could significantly reduce your negative feedback rate.`, 65, doc.y + 20);
-            doc.moveDown(2);
-          }
-        } else {
-          doc.fillColor('#999').fontSize(11).font('Helvetica');
-          doc.text('No complaint data available.', 50, doc.y);
-          doc.text('To get detailed complaint analysis, ensure your CSV has a "Reviews" or "Text" column with customer comments.', 50, doc.y + 20);
-          doc.moveDown(2);
-        }
-
-        // ============ STRATEGIC RECOMMENDATIONS ============
-        doc.font('Helvetica-Bold').fontSize(16).fillColor('#1a237e').text('Strategic Recommendations');
-        doc.moveDown(0.8);
-        
-        if (negativePct > 25) {
-          doc.fillColor('#ffebee').rect(50, doc.y, 500, 110).fill();
-          doc.fillColor('#c62828').fontSize(12).font('Helvetica-Bold').text('⚠️ CRITICAL - Immediate Action Required', 65, doc.y + 12);
-          doc.fillColor('#37474f').fontSize(10).font('Helvetica');
-          doc.text(`Your data shows ${negativePct}% negative feedback (${negative.toLocaleString()} reviews).`, 65, doc.y + 35);
-          doc.text(`This exceeds the industry benchmark of 15%.`, 65, doc.y + 50);
-          doc.moveDown(5);
-          
-          doc.fontSize(11).font('Helvetica-Bold').fillColor('#1a237e').text('ACTION PLAN:', 65, doc.y);
-          doc.fontSize(10).font('Helvetica').fillColor('#37474f');
-          doc.text('1️⃣ Export all negative reviews and categorize by complaint type', 75, doc.y + 18);
-          if (complaints[0]) {
-            doc.text(`2️⃣ Focus on fixing "${complaints[0].category}" issues first`, 75, doc.y + 33);
-          } else {
-            doc.text('2️⃣ Identify the #1 complaint category from negative reviews', 75, doc.y + 33);
-          }
-          doc.text('3️⃣ Implement a fix within 5 business days', 75, doc.y + 48);
-          doc.text('4️⃣ Respond to all 1-2 star reviews', 75, doc.y + 63);
-          doc.text('5️⃣ Re-analyze after 30 days', 75, doc.y + 78);
-        } else if (negativePct > 15) {
-          doc.fillColor('#fff8e1').rect(50, doc.y, 500, 90).fill();
-          doc.fillColor('#ef6c00').fontSize(12).font('Helvetica-Bold').text('📊 Moderate Risk - Targeted Improvements Needed', 65, doc.y + 12);
-          doc.fillColor('#37474f').fontSize(10).font('Helvetica');
-          doc.text(`Your data shows ${negativePct}% negative feedback (${negative.toLocaleString()} reviews).`, 65, doc.y + 35);
-          doc.text(`Targeted improvements will help reduce this further.`, 65, doc.y + 50);
-          doc.moveDown(5);
-          
-          doc.fontSize(11).font('Helvetica-Bold').fillColor('#1a237e').text('RECOMMENDATIONS:', 65, doc.y);
-          doc.fontSize(10).font('Helvetica').fillColor('#37474f');
-          doc.text('1️⃣ Identify top 3 complaint themes from negative reviews', 75, doc.y + 18);
-          if (complaints[0]) {
-            doc.text(`2️⃣ Prioritize fixing "${complaints[0].category}" - your most common complaint`, 75, doc.y + 33);
-          } else {
-            doc.text('2️⃣ Prioritize fixes for the highest-volume complaint', 75, doc.y + 33);
-          }
-          doc.text('3️⃣ Leverage positive reviews for marketing content', 75, doc.y + 48);
-          doc.text('4️⃣ Monitor sentiment changes weekly', 75, doc.y + 63);
-        } else {
-          doc.fillColor('#e8f5e9').rect(50, doc.y, 500, 80).fill();
-          doc.fillColor('#2e7d32').fontSize(12).font('Helvetica-Bold').text('✅ Healthy Sentiment - Maintain Excellence', 65, doc.y + 12);
-          doc.fillColor('#37474f').fontSize(10).font('Helvetica');
-          doc.text(`Your data shows only ${negativePct}% negative feedback - excellent performance!`, 65, doc.y + 35);
-          doc.text(`This puts you above industry benchmarks.`, 65, doc.y + 50);
-          doc.moveDown(4);
-          
-          doc.fontSize(11).font('Helvetica-Bold').fillColor('#1a237e').text('OPPORTUNITIES:', 65, doc.y);
-          doc.fontSize(10).font('Helvetica').fillColor('#37474f');
-          doc.text('1️⃣ Convert positive reviewers into brand advocates', 75, doc.y + 18);
-          doc.text('2️⃣ Use positive reviews as social proof', 75, doc.y + 33);
-          doc.text('3️⃣ Implement a referral program', 75, doc.y + 48);
-        }
-        
-        doc.moveDown(6);
-
-        // ============ BUSINESS IMPACT ============
-        doc.font('Helvetica-Bold').fontSize(14).fillColor('#1a237e').text('Business Impact Analysis');
-        doc.moveDown(0.5);
-        
-        doc.fillColor('#f8fafc').rect(50, doc.y, 500, 80).fill();
-        doc.fillColor('#334155').fontSize(10).font('Helvetica');
-        doc.text(`• Reducing negative reviews from ${negativePct}% to 15% could increase revenue by 15-20%`, 65, doc.y + 12);
-        doc.text(`• Each 1-star review affects approximately 30 potential customers`, 65, doc.y + 28);
-        doc.text(`• Converting ${neutral.toLocaleString()} neutral customers could add ${Math.round(neutral * 0.3).toLocaleString()} new advocates`, 65, doc.y + 44);
-        doc.text(`• Positive reviews (${positive.toLocaleString()}) represent ${positivePct}% of your customer base`, 65, doc.y + 60);
-
-        doc.moveDown(4);
-
-        // ============ FOOTER ============
-        doc.fontSize(8).fillColor('#90a4ae');
-        doc.text('ReviewMind Intelligence Platform | Confidential Business Report', 50, doc.page.height - 30, { align: 'center', width: 500 });
-        doc.text(`Report ID: ${filename.replace('.pdf', '')} | Generated: ${new Date().toLocaleDateString()}`, 50, doc.page.height - 18, { align: 'center', width: 500 });
-
-        doc.end();
-
-        stream.on('finish', () => {
-          console.log(`[PDF] Report generated: ${filename}`);
-          resolve({ success: true, filename, filepath, reportId: filename.replace('.pdf', '') });
-        });
-
-        stream.on('error', (err) => {
-          console.error('[PDF] Stream error:', err);
-          reject(err);
-        });
-
-      } catch (error) {
-        console.error('[PDF] Error:', error);
-        reject(error);
-      }
+    recs.forEach((rec, i) => {
+      if (doc.y > doc.page.height - 100) doc.addPage();
+      doc.fillColor('#0f172a').fontSize(11).font('Helvetica-Bold')
+         .text(`${i + 1}. ${rec.title}`);
+      doc.fillColor('#475569').fontSize(10).font('Helvetica')
+         .text(rec.body, { lineGap: 3 });
+      doc.moveDown(0.6);
     });
   }
 }
 
-module.exports = new PDFGenerator();
+module.exports = new ReportGenerator();

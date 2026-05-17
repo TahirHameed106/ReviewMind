@@ -1,68 +1,70 @@
+// backend/routes/user.routes.js
 const express = require('express');
 const router = express.Router();
 const jwt = require('jsonwebtoken');
-const verifyToken = require('../middleware/auth.middleware');
-const { poolPromise, sql } = require('../db/connection');
+const { query } = require('../db/connection');  // ✅ FIXED PATH
 
-// GET: Current Subscription from Database
-router.get('/subscription', verifyToken, async (req, res) => {
+const JWT_SECRET = process.env.JWT_SECRET || 'reviewmind_secret_2026';
+
+const authMiddleware = (req, res, next) => {
+    const h = req.headers.authorization || '';
+    const t = h.startsWith('Bearer ') ? h.slice(7) : null;
+    if (!t) return res.status(401).json({ error: 'No token provided' });
     try {
-        const pool = await poolPromise;
-        const result = await pool.request()
-            .input('email', sql.NVarChar, req.user.email)
-            .query('SELECT subscription_tier FROM users WHERE email = @email');
+        req.user = jwt.verify(t, JWT_SECRET);
+        next();
+    } catch {
+        res.status(401).json({ error: 'Invalid or expired token' });
+    }
+};
 
-        const plan = result.recordset[0]?.subscription_tier || 'basic';
+const VALID_PLANS = ['basic', 'business', 'enterprise'];
 
-        res.json({
-            success: true,
-            subscriptionPlan: plan
-        });
-    } catch (error) {
-        res.status(500).json({ error: 'Database fetch failed' });
+const makeToken = (user) =>
+    jwt.sign({ id: user.id, email: user.email, name: user.name }, JWT_SECRET, { expiresIn: '24h' });
+
+// GET /api/user/subscription
+router.get('/subscription', authMiddleware, async (req, res) => {
+    try {
+        const result = await query(
+            'SELECT subscription_plan FROM users WHERE email = @email',
+            { email: req.user.email }
+        );
+        if (!result.recordset.length) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        const plan = result.recordset[0].subscription_plan || 'basic';
+        res.json({ success: true, subscriptionPlan: plan });
+    } catch (e) {
+        console.error('[Subscription GET]', e.message);
+        res.status(500).json({ error: e.message });
     }
 });
 
-// PATCH: Upgrade Plan and Refresh JWT
-router.patch('/subscription', verifyToken, async (req, res) => {
-    const requestedPlan = req.body.plan || req.body.subscriptionPlan || req.body.subscription_tier;
-    const validPlans = ['basic', 'business', 'enterprise'];
-    const plan = typeof requestedPlan === 'string' ? requestedPlan.trim().toLowerCase() : '';
-
-    if (!validPlans.includes(plan)) {
-        return res.status(400).json({ error: "Invalid plan selection" });
-    }
-
+// PATCH /api/user/subscription
+router.patch('/subscription', authMiddleware, async (req, res) => {
     try {
-        const pool = await poolPromise;
-        
-        // 1. Update SQL Database
-        await pool.request()
-            .input('email', sql.NVarChar, req.user.email)
-            .input('tier', sql.NVarChar, plan)
-            .query('UPDATE users SET subscription_tier = @tier WHERE email = @email');
+        const planKey = req.body.subscriptionPlan || req.body.plan;
+        if (!planKey || !VALID_PLANS.includes(planKey)) {
+            return res.status(400).json({ error: `Invalid plan. Must be one of: ${VALID_PLANS.join(', ')}` });
+        }
 
-        // 2. Generate a NEW Token containing the NEW plan
-        // This is crucial so the Frontend doesn't have to log out/in
-        const newToken = jwt.sign(
-            { 
-                userId: req.user.userId, 
-                email: req.user.email, 
-                subscriptionPlan: plan 
-            }, 
-            process.env.JWT_SECRET, 
-            { expiresIn: '1h' }
+        await query(
+            'UPDATE users SET subscription_plan = @plan WHERE email = @email',
+            { plan: planKey, email: req.user.email }
         );
+
+        const newToken = makeToken({ id: req.user.id, email: req.user.email, name: req.user.name });
 
         res.json({
             success: true,
-            subscriptionPlan: plan,
-            token: newToken, // Send the refreshed token back
-            message: `Plan upgraded to ${plan}`
+            subscriptionPlan: planKey,
+            token: newToken,
+            message: `Plan updated to ${planKey}`,
         });
-    } catch (error) {
-        console.error(error);
-        res.status(500).json({ error: 'Subscription update failed' });
+    } catch (e) {
+        console.error('[Subscription PATCH]', e.message);
+        res.status(500).json({ error: e.message });
     }
 });
 

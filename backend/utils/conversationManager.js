@@ -1,152 +1,182 @@
+// backend/utils/conversationManager.js
 const axios = require('axios');
 
 class ConversationManager {
-  constructor() {
-    this.conversations = new Map();
-  }
-
-  createConversation(analysisContext) {
-    const conversationId = `conv_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    
-    this.conversations.set(conversationId, {
-      id: conversationId,
-      createdAt: new Date(),
-      context: analysisContext || {},
-      messages: [],
-      systemPrompt: this.buildSystemPrompt(analysisContext)
-    });
-    return conversationId;
-  }
-
-  buildSystemPrompt(analysisContext) {
-    const sentimentData = analysisContext?.sentimentData || [];
-    const complaints = analysisContext?.complaints || [];
-    const metrics = analysisContext?.metrics || {};
-    
-    const negative = sentimentData.find(item => item.name === 'Negative')?.value || 0;
-    const neutral = sentimentData.find(item => item.name === 'Neutral')?.value || 0;
-    const positive = sentimentData.find(item => item.name === 'Positive')?.value || 0;
-    const total = negative + neutral + positive;
-    const negativePct = total > 0 ? ((negative / total) * 100).toFixed(1) : 0;
-
-    let complaintText = "No specific complaint data available.";
-    if (complaints && complaints.length > 0) {
-      complaintText = complaints.slice(0, 3).map(c => 
-        `- ${c.category}: ${c.count} mentions (${c.percentage}% of negatives)`
-      ).join('\n');
+    constructor() {
+        this.conversations = new Map();
     }
 
-    return `You are ReviewMind's SME Intelligence Assistant. Use ONLY this REAL data:
+    createConversation(rawContext = {}) {
+        const id = `conv_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+        
+        // NORMALIZE CONTEXT - Handles BOTH shapes from frontend AND backend
+        const pieData = rawContext.pieData || rawContext.sentimentData || [];
+        const metrics = rawContext.metrics || {};
+        const complaints = rawContext.complaintCategories || rawContext.complaints || [];
+        
+        // Get counts from pieData OR metrics
+        let pos = 0, neu = 0, neg = 0;
+        
+        if (pieData.length > 0) {
+            pos = Number(pieData.find(d => d.name === 'Positive')?.value) || 0;
+            neu = Number(pieData.find(d => d.name === 'Neutral')?.value) || 0;
+            neg = Number(pieData.find(d => d.name === 'Negative')?.value) || 0;
+        } else {
+            pos = metrics.positive_count || 0;
+            neu = metrics.neutral_count || 0;
+            neg = metrics.negative_count || 0;
+        }
+        
+        const total = pos + neu + neg || metrics.total_reviews || 1;
+        const avgRating = metrics.avg_rating || 0;
+        const risk = metrics.risk_level || 'Unknown';
+        
+        // Calculate percentages
+        const posPct = ((pos / total) * 100).toFixed(1);
+        const negPct = ((neg / total) * 100).toFixed(1);
+        const neuPct = ((neu / total) * 100).toFixed(1);
+        const sentimentScore = metrics.sentiment_score || Math.round((pos / total) * 100);
+        
+        const ctx = {
+            total, pos, neu, neg,
+            posPct, negPct, neuPct,
+            avgRating, risk, sentimentScore,
+            filename: rawContext.filename || 'uploaded CSV',
+            complaints: Array.isArray(complaints) ? complaints : []
+        };
+        
+        this.conversations.set(id, {
+            id, ctx,
+            messages: [],
+            createdAt: new Date().toISOString(),
+        });
+        
+        console.log(`[Chat] Created: ${id} | Total: ${total} | Pos: ${posPct}% | Neg: ${negPct}% | Complaints: ${complaints.length}`);
+        return id;
+    }
 
-REVIEW DATA:
-- Total Reviews: ${total}
-- Positive: ${positive} (${((positive/total)*100).toFixed(1)}%)
-- Neutral: ${neutral}
-- Negative: ${negative} (${negativePct}%)
-- Average Rating: ${metrics.avg_rating || 'N/A'}/5
-- Risk Level: ${metrics.risk_level || 'Unknown'}
+    async addMessage(conversationId, userMessage) {
+        const conv = this.conversations.get(conversationId);
+        if (!conv) throw new Error(`Conversation not found: ${conversationId}`);
 
-TOP COMPLAINT CATEGORIES (from actual review text):
-${complaintText}
+        conv.messages.push({ role: 'user', content: userMessage, timestamp: new Date().toISOString() });
+        
+        let reply;
+        if (process.env.GROQ_API_KEY) {
+            try {
+                reply = await this._groqReply(conv.ctx, conv.messages);
+            } catch (e) {
+                console.error('[Chat] Groq failed:', e.message);
+                reply = this._localReply(conv.ctx, userMessage);
+            }
+        } else {
+            reply = this._localReply(conv.ctx, userMessage);
+        }
+        
+        conv.messages.push({ role: 'assistant', content: reply, timestamp: new Date().toISOString() });
+        return { conversationId, assistantResponse: reply, messageCount: conv.messages.length };
+    }
 
-Answer questions based ONLY on this data. Be specific and cite the actual numbers above.`;
-  }
+    async _groqReply(ctx, messages) {
+        const systemPrompt = `You are ReviewMind AI Analyst. Answer ONLY using the real numbers below. Never say "no data available". Never say sentiment is neutral if the numbers show otherwise.
 
-  async addMessage(conversationId, userMessage) {
-    const conversation = this.conversations.get(conversationId);
-    if (!conversation) throw new Error('Conversation not found');
+=== REAL DATA ===
+Total Reviews: ${ctx.total.toLocaleString()}
+Positive: ${ctx.pos.toLocaleString()} (${ctx.posPct}%)
+Negative: ${ctx.neg.toLocaleString()} (${ctx.negPct}%)
+Average Rating: ${ctx.avgRating}/5.0
+Risk Level: ${ctx.risk}
 
-    conversation.messages.push({ role: 'user', content: userMessage, timestamp: new Date() });
-    const response = await this.getAIResponse(conversation);
-    conversation.messages.push({ role: 'assistant', content: response, timestamp: new Date() });
+Top Complaints:
+${ctx.complaints.length ? ctx.complaints.slice(0,5).map(c => `- ${c.category}: ${c.count} mentions (${c.percentage}%)`).join('\n') : '- No specific complaints detected'}
 
-    return { conversationId, userMessage, assistantResponse: response, messageCount: conversation.messages.length };
-  }
+Answer based on this data only.`;
 
-  async getAIResponse(conversation) {
-    const sentimentData = conversation.context?.sentimentData || [];
-    const metrics = conversation.context?.metrics || {};
-    const complaints = conversation.context?.complaints || [];
-    
-    const negative = sentimentData.find(item => item.name === 'Negative')?.value || 0;
-    const neutral = sentimentData.find(item => item.name === 'Neutral')?.value || 0;
-    const positive = sentimentData.find(item => item.name === 'Positive')?.value || 0;
-    const total = negative + neutral + positive;
-    const negativePct = total > 0 ? ((negative / total) * 100).toFixed(1) : 0;
-
-    const messages = [
-      { role: 'system', content: conversation.systemPrompt },
-      ...conversation.messages.map(msg => ({ role: msg.role, content: msg.content }))
-    ];
-
-    // Try Groq first
-    if (process.env.GROQ_API_KEY) {
-      try {
-        console.log('[Chat] Calling Groq...');
         const response = await axios.post(
-          'https://api.groq.com/openai/v1/chat/completions',
-          {
-            model: "llama-3.3-70b-versatile",
-            messages: messages,
-            temperature: 0.7,
-            max_tokens: 500
-          },
-          {
-            headers: { 'Authorization': `Bearer ${process.env.GROQ_API_KEY}` },
-            timeout: 15000
-          }
+            'https://api.groq.com/openai/v1/chat/completions',
+            {
+                model: 'llama-3.3-70b-versatile',
+                messages: [
+                    { role: 'system', content: systemPrompt },
+                    ...messages.slice(-6).map(m => ({ role: m.role, content: m.content }))
+                ],
+                temperature: 0.3,
+                max_tokens: 500
+            },
+            { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}` }, timeout: 15000 }
         );
-        console.log('[Chat] Groq success');
         return response.data.choices[0].message.content;
-      } catch (e) {
-        console.error('[Chat] Groq error:', e.message);
-      }
     }
 
-    // Smart fallback based on REAL data
-    return this.smartFallback(negative, neutral, positive, total, negativePct, metrics, complaints);
-  }
-
-  smartFallback(negative, neutral, positive, total, negativePct, metrics, complaints) {
-    // Build response based on actual data
-    let response = `📊 **Based on YOUR ${total.toLocaleString()} reviews:**\n\n`;
-    response += `• Positive: ${positive.toLocaleString()} (${((positive/total)*100).toFixed(1)}%)\n`;
-    response += `• Neutral: ${neutral.toLocaleString()}\n`;
-    response += `• Negative: ${negative.toLocaleString()} (${negativePct}%)\n`;
-    response += `• Average Rating: ${metrics.avg_rating || 'N/A'}/5\n`;
-    response += `• Risk Level: ${metrics.risk_level || 'Unknown'}\n\n`;
-    
-    if (complaints && complaints.length > 0) {
-      response += `**Top Complaints:**\n`;
-      complaints.slice(0, 3).forEach(c => {
-        response += `• ${c.category}: ${c.count} reviews (${c.percentage}%)\n`;
-      });
+    _localReply(ctx, msg) {
+        const q = msg.toLowerCase();
+        
+        // Detailed report
+        if (q.includes('detailed') || q.includes('full') || q.includes('report')) {
+            let r = `📊 **Detailed Report — ${ctx.filename}**\n\n`;
+            r += `Total Reviews: ${ctx.total.toLocaleString()}\n`;
+            r += `✅ Positive: ${ctx.pos.toLocaleString()} (${ctx.posPct}%)\n`;
+            r += `❌ Negative: ${ctx.neg.toLocaleString()} (${ctx.negPct}%)\n`;
+            r += `⭐ Average Rating: ${ctx.avgRating}/5.0\n`;
+            r += `🎯 Risk Level: ${ctx.risk}\n`;
+            r += `📈 Sentiment Score: ${ctx.sentimentScore}/100\n\n`;
+            
+            if (ctx.complaints.length > 0) {
+                r += `🔍 **Top Complaints:**\n`;
+                ctx.complaints.slice(0, 5).forEach((c, i) => {
+                    r += `${i+1}. **${c.category}**: ${c.count} mentions (${c.percentage}% of negatives)\n`;
+                });
+            }
+            return r;
+        }
+        
+        // Complaints
+        if (q.includes('complaint') || q.includes('issue')) {
+            if (ctx.complaints.length === 0) {
+                return `📝 No specific complaint categories detected. ${ctx.neg.toLocaleString()} negative reviews (${ctx.negPct}%) but no text column for breakdown.`;
+            }
+            let r = `🔍 **Top Issues:**\n\n`;
+            ctx.complaints.slice(0, 5).forEach((c, i) => {
+                r += `${i+1}. **${c.category}**: ${c.count} mentions (${c.percentage}%)\n`;
+            });
+            return r;
+        }
+        
+        // Sentiment
+        if (q.includes('sentiment')) {
+            return `📊 **Sentiment:**\n✅ Positive: ${ctx.pos.toLocaleString()} (${ctx.posPct}%)\n❌ Negative: ${ctx.neg.toLocaleString()} (${ctx.negPct}%)\nScore: ${ctx.sentimentScore}/100`;
+        }
+        
+        // Risk
+        if (q.includes('risk')) {
+            return `🎯 **Risk Level:** ${ctx.risk}\n\nBased on ${ctx.neg.toLocaleString()} negative reviews (${ctx.negPct}%) out of ${ctx.total.toLocaleString()} total.`;
+        }
+        
+        // Main issue
+        if (q.includes('main') || q.includes('primary')) {
+            if (ctx.complaints.length > 0) {
+                return `🔍 **Main Issue:** ${ctx.complaints[0].category} (${ctx.complaints[0].count} mentions, ${ctx.complaints[0].percentage}% of negatives)`;
+            }
+            return `❌ ${ctx.neg.toLocaleString()} negative reviews (${ctx.negPct}%) is the main concern.`;
+        }
+        
+        // Default summary
+        return `📊 **${ctx.filename}** — ${ctx.total.toLocaleString()} reviews\n✅ ${ctx.posPct}% positive (${ctx.pos.toLocaleString()})\n❌ ${ctx.negPct}% negative (${ctx.neg.toLocaleString()})\n⭐ Rating: ${ctx.avgRating}/5\n🎯 Risk: ${ctx.risk}\n\nAsk: "detailed report", "complaints", "sentiment", "risk", or "main issue"`;
     }
-    
-    if (negativePct > 25) {
-      response += `\n⚠️ **CRITICAL:** ${negativePct}% negative rate. Focus on fixing "${complaints[0]?.category || 'top complaints'}" immediately.`;
-    } else if (negativePct > 15) {
-      response += `\n📊 **MODERATE:** ${negativePct}% negative rate. Targeted improvements needed.`;
-    } else {
-      response += `\n✅ **GOOD:** Only ${negativePct}% negative feedback. Maintain quality.`;
+
+    getConversationHistory(id) {
+        const c = this.conversations.get(id);
+        if (!c) throw new Error(`Conversation not found: ${id}`);
+        return { id: c.id, messages: c.messages, createdAt: c.createdAt };
     }
-    
-    return response;
-  }
 
-  getConversationHistory(conversationId) {
-    const conversation = this.conversations.get(conversationId);
-    if (!conversation) throw new Error('Conversation not found');
-    return { id: conversationId, createdAt: conversation.createdAt, messageCount: conversation.messages.length, messages: conversation.messages };
-  }
+    getAllConversations() {
+        return Array.from(this.conversations.values()).map(c => ({ id: c.id, createdAt: c.createdAt, messageCount: c.messages.length }));
+    }
 
-  deleteConversation(conversationId) {
-    return this.conversations.delete(conversationId);
-  }
-
-  getAllConversations() {
-    return Array.from(this.conversations.values()).map(conv => ({ id: conv.id, createdAt: conv.createdAt, messageCount: conv.messages.length }));
-  }
+    deleteConversation(id) {
+        return this.conversations.delete(id);
+    }
 }
 
 module.exports = new ConversationManager();

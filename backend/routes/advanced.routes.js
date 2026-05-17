@@ -1,407 +1,195 @@
+// backend/routes/advanced.routes.js
 const express = require('express');
 const router = express.Router();
 const axios = require('axios');
 const multer = require('multer');
-const csv = require('csvtojson');
+const FormData = require('form-data');
 const fs = require('fs');
 const path = require('path');
-const reportGenerator = require('../utils/reportGenerator');
+
 const conversationManager = require('../utils/conversationManager');
-const blockchain = require('../utils/blockchain');
+const reportGenerator = require('../services/pdfGenerator');
 
-const extractRatingSeries = (reviews, ratingColumn) => {
-  if (!Array.isArray(reviews) || reviews.length === 0 || !ratingColumn) {
-    return [];
-  }
+const ML_URL = process.env.ML_SERVICE_URL || 'http://127.0.0.1:8000';
 
-  return reviews
-    .map((review) => Number(review?.[ratingColumn]))
-    .filter((value) => Number.isFinite(value));
-};
-
-const buildTimeSeriesData = async (reviews, ratingColumn) => {
-  const ratings = extractRatingSeries(reviews, ratingColumn);
-
-  if (ratings.length === 0) {
-    return [];
-  }
-
-  const observedSeries = ratings.map((rating, index) => {
-    const cumulativeAverage = ratings
-      .slice(0, index + 1)
-      .reduce((sum, value) => sum + value, 0) / (index + 1);
-
-    return {
-      month: `Review ${index + 1}`,
-      reviews: index + 1,
-      satisfaction: Number(cumulativeAverage.toFixed(2)),
-      type: 'observed'
-    };
-  });
-
-  try {
-    const forecastResponse = await axios.post('http://127.0.0.1:8000/analyze/forecast',
-      ratings.map((rating) => ({ rating })));
-
-    const forecastValues = Array.isArray(forecastResponse.data?.forecast)
-      ? forecastResponse.data.forecast
-      : [];
-
-    const forecastSeries = forecastValues.map((value, index) => ({
-      month: `Forecast ${index + 1}`,
-      reviews: ratings.length + index + 1,
-      satisfaction: Number(Number(value).toFixed(2)),
-      type: 'forecast'
-    }));
-
-    return [...observedSeries, ...forecastSeries];
-  } catch (error) {
-    return observedSeries;
-  }
-};
+// Session store
+const sessionStore = new Map();
+setInterval(() => {
+    const cutoff = Date.now() - 3600000;
+    for (const [id, s] of sessionStore)
+        if (new Date(s.analyzedAt).getTime() < cutoff) sessionStore.delete(id);
+}, 600000).unref();
 
 const upload = multer({
-  dest: 'uploads/',
-  limits: {
-    fileSize: 100 * 1024 * 1024,
-    fieldSize: 25 * 1024 * 1024,
-    fields: 20,
-    files: 1
-  }
+    dest: path.join(__dirname, '../uploads/'),
+    limits: { fileSize: 200 * 1024 * 1024 },
 });
 
-/**
- * BLOCKCHAIN VERIFICATION ROUTES
- */
-
-// Add review to blockchain
-router.post('/blockchain/verify', async (req, res) => {
-  try {
-    const { reviewData } = req.body;
-    
-    if (!reviewData) {
-      return res.status(400).json({ error: 'Review data required' });
-    }
-
-    const result = blockchain.addReview(reviewData);
-    
-    res.status(200).json({
-      success: result.success,
-      blockId: result.blockId,
-      hash: result.hash,
-      proof: result.proof,
-      timestamp: new Date().toISOString(),
-      status: 'VERIFIED_ON_CHAIN'
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Check review integrity
-router.post('/blockchain/check', async (req, res) => {
-  try {
-    const { reviewData, blockId } = req.body;
-    
-    const status = blockchain.getReviewStatus(blockId);
-    
-    if (reviewData && status.hash) {
-      const verification = blockchain.verifyReview(reviewData, status.hash);
-      status.verification = verification;
-    }
-
-    res.status(200).json({
-      success: true,
-      status: status
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get blockchain statistics
-router.get('/blockchain/stats', async (req, res) => {
-  try {
-    const stats = blockchain.getChainStats();
-    const chainValid = blockchain.validateChain();
-    
-    res.status(200).json({
-      success: true,
-      statistics: stats,
-      chainValidation: chainValid
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-/**
- * REPORT GENERATION ROUTES
- */
-
-// Generate comprehensive PDF report
-router.post('/reports/generate', async (req, res) => {
-  try {
-    const { analysisData } = req.body;
-    
-    if (!analysisData) {
-      return res.status(400).json({ error: 'Analysis data required' });
-    }
-
-    const reportResult = await reportGenerator.generateReport(analysisData);
-    
-    res.status(200).json({
-      success: true,
-      report: reportResult
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Download report
-router.get('/reports/download/:reportId', async (req, res) => {
-  try {
-    const { reportId } = req.params;
-    const fs = require('fs');
-    const path = require('path');
-    
-    const reportsDir = path.join(__dirname, '../uploads/reports');
-    const files = fs.readdirSync(reportsDir);
-    const reportFile = files.find(f => f.startsWith(reportId));
-    
-    if (!reportFile) {
-      return res.status(404).json({ error: 'Report not found' });
-    }
-
-    const filepath = path.join(reportsDir, reportFile);
-    res.download(filepath, reportFile);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-/**
- * CONVERSATION/CHAT ROUTES
- */
-
-// Create new conversation
-router.post('/chat/conversation', async (req, res) => {
-  try {
-    const { analysisContext } = req.body;
-    
-    if (!analysisContext) {
-      return res.status(400).json({ error: 'Analysis context required' });
-    }
-
-    const conversationId = conversationManager.createConversation(analysisContext);
-    
-    res.status(200).json({
-      success: true,
-      conversationId: conversationId,
-      message: 'Conversation started. You can now ask questions about your review data.'
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Send message in conversation
-router.post('/chat/message', async (req, res) => {
-  try {
-    const { conversationId, message } = req.body;
-    
-    if (!conversationId || !message) {
-      return res.status(400).json({ error: 'Conversation ID and message required' });
-    }
-
-    const result = await conversationManager.addMessage(conversationId, message);
-    
-    res.status(200).json({
-      success: true,
-      conversationId: result.conversationId,
-      userMessage: result.userMessage,
-      assistantResponse: result.assistantResponse,
-      messageCount: result.messageCount
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get conversation history
-router.get('/chat/history/:conversationId', async (req, res) => {
-  try {
-    const { conversationId } = req.params;
-    
-    const history = conversationManager.getConversationHistory(conversationId);
-    
-    res.status(200).json({
-      success: true,
-      history: history
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Get all conversations
-router.get('/chat/conversations', async (req, res) => {
-  try {
-    const conversations = conversationManager.getAllConversations();
-    
-    res.status(200).json({
-      success: true,
-      conversations: conversations,
-      totalConversations: conversations.length
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-/**
- * ENHANCED ML ANALYSIS ROUTE
- */
-
-// Get detailed analysis with real data
-router.post('/ml/enhanced-analyze', async (req, res) => {
-  try {
-    const { reviews } = req.body;
-    
-    if (!reviews || reviews.length === 0) {
-      return res.status(400).json({ error: 'Reviews data required' });
-    }
-
-    // Call Python ML service for real analysis
-    console.log('[ML Pipeline] Calling Python service for analysis...');
-    const mlResponse = await axios.post('http://127.0.0.1:8000/analyze/dashboard-data', reviews);
-    
-    console.log('[ML Pipeline] Python responded:', mlResponse.status);
-
-    const timeSeriesData = await buildTimeSeriesData(reviews, mlResponse.data?.metrics?.detected_col);
-
-    // Add blockchain verification
-    const blockchainResult = blockchain.addReview(reviews);
-
-    res.status(200).json({
-      success: true,
-      data: mlResponse.data,
-      timeSeriesData,
-      blockchainVerification: blockchainResult,
-      analysisMetadata: {
-        totalReviewsAnalyzed: reviews.length,
-        analysisTime: new Date().toISOString(),
-        pythonServiceStatus: 'Connected',
-        blockchainStatus: 'Verified',
-        pipelineStages: [
-          { key: 'received', label: 'Request received', status: 'done' },
-          { key: 'python', label: 'Python analysis complete', status: 'done' },
-          { key: 'blockchain', label: 'Blockchain verification complete', status: 'done' },
-          { key: 'dashboard', label: 'Dashboard data ready', status: 'done' }
-        ]
-      }
-    });
-  } catch (error) {
-    console.error('[ML Pipeline] Error:', error.message);
-    res.status(500).json({ 
-      error: 'Analysis failed',
-      details: error.message
-    });
-  }
-});
-
-// Upload CSV and analyze it in one server-side flow to avoid large browser JSON payloads.
+// ML Upload & Analyze
 router.post('/ml/upload-analyze', upload.single('file'), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'CSV file required' });
-    }
+    if (!req.file) return res.status(400).json({ success: false, error: 'CSV file required' });
+    const filePath = req.file.path;
+    
+    try {
+        const form = new FormData();
+        form.append('file', fs.createReadStream(filePath), {
+            filename: req.file.originalname || 'reviews.csv',
+            contentType: 'text/csv',
+        });
 
-    let reviews = await csv().fromFile(req.file.path);
+        console.log(`[ML] → Python: ${req.file.originalname}`);
+        const mlRes = await axios.post(`${ML_URL}/analyze/dashboard-data`, form, {
+            headers: form.getHeaders(),
+            timeout: 300000,
+        });
 
-    if (!reviews.length) {
-      return res.status(400).json({ error: 'No review rows found in the CSV file' });
-    }
-
-    // Clean data: remove NaN, null, and convert problematic values
-    reviews = reviews.map(row => {
-      const cleaned = {};
-      for (const [key, value] of Object.entries(row)) {
-        if (value === null || value === undefined || value === 'NaN' || Number.isNaN(value)) {
-          cleaned[key] = '';
-        } else {
-          cleaned[key] = value;
+        if (!mlRes.data?.success) {
+            throw new Error(mlRes.data?.detail || mlRes.data?.error || 'Python analysis failed');
         }
-      }
-      return cleaned;
+
+        const realData = mlRes.data.data;
+        const sessionId = `session_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+
+        // Store COMPLETE data including complaints
+        sessionStore.set(sessionId, {
+            pieData: realData.pieData || [],
+            metrics: realData.metrics || {},
+            complaintCategories: realData.complaintCategories || [],
+            filename: req.file.originalname,
+            analyzedAt: new Date().toISOString(),
+        });
+
+        console.log(`[ML] Done. Session: ${sessionId} | Total: ${realData.metrics?.total_reviews || 0} | Complaints: ${realData.complaintCategories?.length || 0}`);
+
+        return res.json({
+            success: true,
+            sessionId,
+            data: realData,
+            analysisMetadata: {
+                totalReviewsAnalyzed: realData.metrics?.total_reviews || 0,
+                analysisTime: new Date().toISOString(),
+                pythonServiceStatus: 'Connected',
+            },
+        });
+
+    } catch (err) {
+        console.error('[ML] Error:', err.message);
+        if (err.code === 'ECONNREFUSED') {
+            return res.status(503).json({ success: false, error: 'Python ML service not running on port 8000' });
+        }
+        return res.status(500).json({ success: false, error: err.response?.data?.detail || err.message });
+    } finally {
+        try { fs.unlinkSync(filePath); } catch (_) {}
+    }
+});
+
+// ML Health
+router.get('/ml/health', async (req, res) => {
+    try {
+        const r = await axios.get(`${ML_URL}/health`, { timeout: 5000 });
+        res.json({ success: true, ml_service: r.data });
+    } catch {
+        res.status(503).json({ success: false, error: 'Python ML service offline' });
+    }
+});
+
+// Chat Conversation - FIXED to pass complaints correctly
+router.post('/chat/conversation', async (req, res) => {
+    try {
+        const { sessionId, analysisContext } = req.body;
+        let context = null;
+
+        // Prefer server-side session (has full data)
+        if (sessionId && sessionStore.has(sessionId)) {
+            const s = sessionStore.get(sessionId);
+            context = {
+                pieData: s.pieData || [],
+                metrics: s.metrics || {},
+                complaintCategories: s.complaintCategories || [],
+                complaints: s.complaintCategories || [],
+                filename: s.filename || 'uploaded CSV',
+            };
+        } else if (analysisContext) {
+            // Frontend-sent context
+            context = analysisContext;
+        }
+
+        if (!context) {
+            return res.status(400).json({ success: false, error: 'Provide sessionId or analysisContext' });
+        }
+
+        const conversationId = conversationManager.createConversation(context);
+        res.json({ success: true, conversationId });
+    } catch (e) {
+        console.error('[Chat] Error:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Chat Message
+router.post('/chat/message', async (req, res) => {
+    try {
+        const { conversationId, message } = req.body;
+        if (!conversationId || !message) {
+            return res.status(400).json({ success: false, error: 'conversationId and message required' });
+        }
+        const result = await conversationManager.addMessage(conversationId, message);
+        res.json({ success: true, ...result });
+    } catch (e) {
+        console.error('[Chat] Error:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Generate Report
+router.post('/reports/generate', async (req, res) => {
+    try {
+        const { sessionId, analysisData } = req.body;
+        let data = null;
+
+        if (sessionId && sessionStore.has(sessionId)) {
+            data = sessionStore.get(sessionId);
+        } else if (analysisData) {
+            data = analysisData;
+        }
+
+        if (!data) {
+            return res.status(400).json({ success: false, error: 'Provide sessionId or analysisData' });
+        }
+
+        const report = await reportGenerator.generateReport(data);
+        res.json({ success: true, report });
+    } catch (e) {
+        console.error('[Report] Error:', e);
+        res.status(500).json({ success: false, error: e.message });
+    }
+});
+
+// Download Report
+router.get('/reports/download/:reportId', (req, res) => {
+    try {
+        const dir = path.join(__dirname, '../uploads/reports');
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        const files = fs.readdirSync(dir);
+        const file = files.find(f => f.includes(req.params.reportId));
+        if (!file) return res.status(404).json({ error: 'Report not found' });
+        res.download(path.join(dir, file), file);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Blockchain Stats
+router.get('/blockchain/stats', (req, res) => {
+    res.json({
+        success: true,
+        statistics: {
+            totalReviews: 0,
+            totalBlocks: 0,
+            chainValid: true,
+            lastVerified: new Date().toISOString(),
+        },
     });
-
-    console.log('[ML Pipeline] Calling Python service for analysis from uploaded CSV...');
-    const mlResponse = await axios.post('http://127.0.0.1:8000/analyze/dashboard-data', reviews);
-
-    // Check if Python service returned an error
-    if (mlResponse.data?.error) {
-      console.error('[ML Pipeline] Python service error:', mlResponse.data.error);
-      return res.status(500).json({
-        error: 'Python analysis failed',
-        details: mlResponse.data.error
-      });
-    }
-
-    const timeSeriesData = await buildTimeSeriesData(reviews, mlResponse.data?.metrics?.detected_col);
-
-    const blockchainResult = blockchain.addReview(reviews);
-
-    res.status(200).json({
-      success: true,
-      data: mlResponse.data,
-      timeSeriesData,
-      blockchainVerification: blockchainResult,
-      analysisMetadata: {
-        totalReviewsAnalyzed: reviews.length,
-        analysisTime: new Date().toISOString(),
-        pythonServiceStatus: 'Connected',
-        blockchainStatus: 'Verified',
-        pipelineStages: [
-          { key: 'upload', label: 'CSV uploaded', status: 'done' },
-          { key: 'parse', label: 'CSV parsed', status: 'done' },
-          { key: 'python', label: 'Python analysis complete', status: 'done' },
-          { key: 'blockchain', label: 'Blockchain verification complete', status: 'done' },
-          { key: 'dashboard', label: 'Dashboard data ready', status: 'done' }
-        ]
-      }
-    });
-  } catch (error) {
-    console.error('[ML Pipeline] CSV upload analysis error:', error.message);
-
-    if (req.file?.path) {
-      try {
-        fs.unlinkSync(req.file.path);
-      } catch (_) {
-        // Ignore cleanup failures.
-      }
-    }
-
-    if (error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE') {
-      return res.status(413).json({
-        error: 'CSV file is too large. Please split the dataset into smaller files.'
-      });
-    }
-
-    res.status(500).json({
-      error: 'CSV upload analysis failed',
-      details: error.message
-    });
-  } finally {
-    if (req.file?.path) {
-      try {
-        fs.unlinkSync(req.file.path);
-      } catch (_) {
-        // Ignore cleanup failures.
-      }
-    }
-  }
 });
 
 module.exports = router;

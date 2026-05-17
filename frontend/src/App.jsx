@@ -115,7 +115,9 @@ const initialAnalysis = {
     detected_col: 'rating'
   },
   blockchainVerification: null,
-  analysisMetadata: null
+  analysisMetadata: null,
+  complaintCategories: [],
+  ratingDistribution: []
 };
 
 const defaultProgress = [
@@ -205,16 +207,6 @@ const persistSession = (session) => {
     window.localStorage.removeItem(STORAGE_KEYS.token);
     window.localStorage.removeItem(STORAGE_KEYS.email);
     window.localStorage.removeItem(STORAGE_KEYS.plan);
-  }
-};
-
-const persistPlan = (planKey) => {
-  if (typeof window === 'undefined') {
-    return;
-  }
-
-  if (SUBSCRIPTION_PLANS[planKey]) {
-    window.localStorage.setItem(STORAGE_KEYS.plan, planKey);
   }
 };
 
@@ -692,7 +684,6 @@ const AuthScreen = ({
                             borderRadius: '8px',
                             border: signupPlan === plan.key ? `2px solid ${plan.accent}` : `1px solid var(--border)`,
                             background: signupPlan === plan.key ? 'var(--surface)' : 'transparent',
-                            color: 'var(--dark)',
                             cursor: 'pointer',
                             transition: 'all 0.2s ease',
                             fontWeight: signupPlan === plan.key ? '600' : '500',
@@ -868,7 +859,6 @@ function App() {
   }, [session?.token]);
 
   const hasAnalysis = (analysis?.pieData || []).length > 0;
-  const hasTimeSeries = (analysis?.timeSeriesData || []).length > 1;
   const totalReviews = useMemo(
     () => analysis?.pieData?.reduce((sum, item) => sum + (Number(item.value) || 0), 0) || 0,
     [analysis]
@@ -891,10 +881,6 @@ function App() {
       value: Number(item.value) || 0,
       fill: getSentimentColor(item.name)
     })),
-    [analysis]
-  );
-  const trendChartData = useMemo(
-    () => analysis?.timeSeriesData || [],
     [analysis]
   );
 
@@ -1085,7 +1071,7 @@ function App() {
     };
 
     updatePlan();
-};
+  };
 
   const handleOpenChat = () => {
     if (!canUseFeature('chat')) {
@@ -1123,7 +1109,7 @@ function App() {
       const formData = new FormData();
       formData.append('file', file);
 
-      const analysisResponse = await axios.post(`${API_BASE}/api/ml/upload-analyze`, formData);
+      const analysisResponse = await axios.post(`${API_BASE}/api/advanced/ml/upload-analyze`, formData);
 
       console.log('[Dashboard] API Response:', analysisResponse.data);
 
@@ -1137,6 +1123,14 @@ function App() {
         console.error('[Dashboard] Unexpected response format:', analysisResponse.data);
         setError('Invalid response format from server');
         setStatus('error');
+        setPipelineProgress([
+          { key: 'upload', label: 'CSV uploaded', status: 'done' },
+          { key: 'parse', label: 'CSV parsed', status: 'done' },
+          { key: 'python', label: 'Python analysis', status: 'error' },
+          { key: 'blockchain', label: 'Blockchain verification', status: 'idle' },
+          { key: 'dashboard', label: 'Dashboard ready', status: 'idle' }
+        ]);
+        setLoading(false);
         return;
       }
       
@@ -1144,13 +1138,20 @@ function App() {
         console.error('[Dashboard] Missing pieData in response:', responseData);
         setError('Analysis response missing sentiment data');
         setStatus('error');
+        setPipelineProgress([
+          { key: 'upload', label: 'CSV uploaded', status: 'done' },
+          { key: 'parse', label: 'CSV parsed', status: 'done' },
+          { key: 'python', label: 'Python analysis', status: 'error' },
+          { key: 'blockchain', label: 'Blockchain verification', status: 'idle' },
+          { key: 'dashboard', label: 'Dashboard ready', status: 'idle' }
+        ]);
+        setLoading(false);
         return;
       }
 
       setAnalysis({
-        ...initialAnalysis,
         pieData: responseData.pieData || [],
-        metrics: responseData.metrics || { total_reviews: 0, avg_rating: 0 },
+        metrics: responseData.metrics || { total_reviews: 0, avg_rating: 0, detected_col: 'rating' },
         ratingDistribution: responseData.ratingDistribution || [],
         complaintCategories: responseData.complaintCategories || [],
         timeSeriesData: responseData.timeSeriesData || [],
@@ -1233,7 +1234,7 @@ function App() {
       link.download = report?.filename || 'reviewmind-report.pdf';
       document.body.appendChild(link);
       link.click();
-      link.remove();
+      setTimeout(() => link.remove(), 100);
       setStatus('ready');
       setReportStatus(`Report ready: ${report?.filename || 'reviewmind-report.pdf'}`);
     } catch (reportError) {
@@ -1275,7 +1276,7 @@ function App() {
     { key: 'chat', label: 'Chat', icon: MessageCircle }
   ];
 
-  if (debugMode) {
+  if (debugMode && canUseFeature('debug')) {
     navTabs.push({ key: 'debug', label: 'Debug', icon: Fingerprint });
   }
 
