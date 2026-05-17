@@ -18,6 +18,12 @@ except Exception:
     TEXTBLOB_OK = False
 
 app = FastAPI(title="ReviewMind Universal ML", version="6.0")
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
+@app.get("/")
+async def root():
+    return {"message": "ReviewMind ML Service Running"}
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
