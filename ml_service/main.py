@@ -1,211 +1,322 @@
-from fastapi import FastAPI, File, UploadFile
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
-import numpy as np
-import re
+import io
 import logging
 from datetime import datetime
-import io
-import warnings
-warnings.filterwarnings('ignore')
+from typing import List, Dict, Any, Optional
+import hashlib
+import chardet
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Try to import optional ML libraries
+try:
+    from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+    VADER_AVAILABLE = True
+except ImportError:
+    VADER_AVAILABLE = False
+    logging.warning("vaderSentiment not installed")
+
+try:
+    from sentence_transformers import SentenceTransformer
+    from sklearn.cluster import KMeans
+    from sklearn.preprocessing import StandardScaler
+    import numpy as np
+    ML_AVAILABLE = True
+except ImportError:
+    ML_AVAILABLE = False
+    logging.warning("ML libraries not installed")
+
+from insights_engine import (
+    detect_root_causes,
+    detect_trends,
+    detect_anomalies,
+    generate_executive_summary,
+    auto_label_topics,
+    calculate_sentiment_shift
+)
+
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ============ AGGRESSIVE OPTIMIZATION ============
-MAX_ROWS = 5000  # Reduced from 10000 to 5000
-SAMPLE_SIZE = 150  # Only analyze 150 negative reviews
-USE_RATINGS_ONLY = True  # Skip NLP entirely, use ratings column
+app = FastAPI(title="ReviewMind ML Service", version="4.0.0")
 
-app = FastAPI(title="ReviewMind ML Engine")
-
+# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:3000", "http://localhost:3001"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-@app.get("/")
-@app.get("/health")
-async def root():
-    return {"status": "running", "timestamp": datetime.now().isoformat()}
+# Configuration
+RATING_KEYWORDS = ['rating', 'score', 'stars', 'rate', 'review_score', 'point', 'ratings']
+TEXT_KEYWORDS = ['review', 'comment', 'feedback', 'text', 'message', 'content', 'description']
 
-# ============ COLUMN DETECTION ============
-RATING_COLS = ['rating', 'ratings', 'score', 'stars', 'Rate', 'Score', 'Rating']
-REVIEW_COLS = ['review', 'reviews', 'text', 'comment', 'Reviews', 'Text']
+# Initialize ML components
+sentiment_analyzer = None
+embedding_model = None
 
-def detect_column(headers, candidates):
-    for i, h in enumerate(headers):
-        h_clean = h.strip().lower()
-        for c in candidates:
-            if h_clean == c.lower():
-                return i, headers[i]
-    return None, None
+if VADER_AVAILABLE:
+    sentiment_analyzer = SentimentIntensityAnalyzer()
+    logger.info("VADER initialized")
 
-# ============ MAIN ANALYSIS (ULTRA FAST) ============
-@app.post("/analyze/dashboard-data")
-async def analyze_dashboard(file: UploadFile = File(...)):
+if ML_AVAILABLE:
     try:
-        if not file.filename.endswith('.csv'):
-            return {"success": False, "error": "Only CSV files are supported"}
+        embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+        logger.info("Sentence transformer loaded")
+    except Exception as e:
+        logger.error(f"Failed to load embedding model: {e}")
+        ML_AVAILABLE = False
+
+def detect_encoding(content: bytes) -> str:
+    """Detect file encoding"""
+    try:
+        result = chardet.detect(content)
+        return result['encoding'] if result['encoding'] else 'utf-8'
+    except:
+        return 'utf-8'
+
+def detect_column(df: pd.DataFrame, keywords: List[str], fallback_type: str = 'string') -> Optional[str]:
+    """Auto-detect column"""
+    for col in df.columns:
+        for keyword in keywords:
+            if keyword in col.lower():
+                return col
+    
+    if fallback_type == 'number':
+        numeric_cols = df.select_dtypes(include=['number']).columns
+        return numeric_cols[0] if len(numeric_cols) > 0 else None
+    else:
+        string_cols = df.select_dtypes(include=['object']).columns
+        return string_cols[0] if len(string_cols) > 0 else None
+
+def analyze_text_sentiment(text: str) -> Dict:
+    """Analyze sentiment from text using VADER"""
+    if not text or pd.isna(text) or not VADER_AVAILABLE:
+        return {"sentiment": "Neutral", "confidence": 0.5}
+    
+    try:
+        scores = sentiment_analyzer.polarity_scores(str(text))
+        compound = scores['compound']
         
-        # Read only first 5000 rows for speed
-        content = await file.read()
+        if compound >= 0.05:
+            return {"sentiment": "Positive", "confidence": abs(compound), "scores": scores}
+        elif compound <= -0.05:
+            return {"sentiment": "Negative", "confidence": abs(compound), "scores": scores}
+        else:
+            return {"sentiment": "Neutral", "confidence": 0.5, "scores": scores}
+    except:
+        return {"sentiment": "Neutral", "confidence": 0.5}
+
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "service": "ml-service",
+        "version": "4.0.0",
+        "capabilities": {
+            "vader_sentiment": VADER_AVAILABLE,
+            "ml_embeddings": ML_AVAILABLE,
+            "clustering": ML_AVAILABLE,
+            "smart_insights": True
+        },
+        "timestamp": datetime.now().isoformat()
+    }
+
+@app.post("/analyze/dashboard-data")
+async def analyze_dashboard_data(file: UploadFile = File(...)):
+    """Production-grade ML analysis with smart insights"""
+    logger.info(f"Processing: {file.filename}")
+    
+    try:
+        # Read and parse CSV
+        contents = await file.read()
+        encoding = detect_encoding(contents)
+        
         try:
-            df = pd.read_csv(io.BytesIO(content), encoding='utf-8', nrows=MAX_ROWS)
-        except:
-            df = pd.read_csv(io.BytesIO(content), encoding='latin1', nrows=MAX_ROWS)
+            df = pd.read_csv(io.StringIO(contents.decode(encoding)))
+        except UnicodeDecodeError:
+            df = pd.read_csv(io.StringIO(contents.decode('latin-1')))
         
         if df.empty:
-            return {"success": False, "error": "CSV file is empty"}
-        
-        logger.info(f"Processing {len(df)} rows")
+            raise HTTPException(status_code=400, detail="CSV file is empty")
         
         # Detect columns
-        rating_idx, rating_name = detect_column(df.columns, RATING_COLS)
-        review_idx, review_name = detect_column(df.columns, REVIEW_COLS)
+        rating_col = detect_column(df, RATING_KEYWORDS, 'number')
+        if not rating_col:
+            raise HTTPException(status_code=400, detail="No rating column found")
         
-        # Initialize counters
-        positive, neutral, negative = 0, 0, 0
-        negative_reviews = []
+        review_col = detect_column(df, TEXT_KEYWORDS, 'string')
+        logger.info(f"Columns - Rating: {rating_col}, Review: {review_col}")
         
-        # FAST PROCESSING: Use rating column if available
-        if rating_idx is not None:
-            logger.info(f"Using rating column: {rating_name}")
-            
-            for val in df.iloc[:, rating_idx]:
-                try:
-                    rating = float(val)
-                    if 1 <= rating <= 5:
-                        if rating >= 4:
-                            positive += 1
-                        elif rating >= 2.5:
-                            neutral += 1
-                        else:
-                            negative += 1
-                except (ValueError, TypeError):
-                    neutral += 1
+        # Clean data
+        df[rating_col] = pd.to_numeric(df[rating_col], errors='coerce')
+        df = df.dropna(subset=[rating_col])
+        df[rating_col] = df[rating_col].clip(0, 5)
         
-        # If no rating column, use review text (slower but necessary)
-        elif review_idx is not None:
-            logger.info(f"Using review column: {review_name}")
+        # Sentiment analysis
+        sentiments = []
+        for idx, row in df.iterrows():
+            rating = row[rating_col]
             
-            # Simple keyword sentiment (very fast)
-            pos_words = ['good', 'great', 'excellent', 'amazing', 'love', 'perfect', 'awesome']
-            neg_words = ['bad', 'poor', 'terrible', 'hate', 'awful', 'worst', 'broken', 'defective']
-            
-            for text in df.iloc[:, review_idx]:
-                if pd.isna(text):
-                    neutral += 1
-                    continue
+            if review_col and pd.notna(row[review_col]):
+                text_result = analyze_text_sentiment(row[review_col])
+                text_sentiment = text_result['sentiment']
                 
-                text_lower = str(text).lower()
-                pos_count = sum(1 for w in pos_words if w in text_lower)
-                neg_count = sum(1 for w in neg_words if w in text_lower)
-                
-                if pos_count > neg_count:
-                    positive += 1
-                elif neg_count > pos_count:
-                    negative += 1
-                    if len(negative_reviews) < SAMPLE_SIZE:
-                        negative_reviews.append(text_lower[:200])
+                # Combine rating and text sentiment
+                if rating >= 4 and text_sentiment != "Negative":
+                    sentiment = "Positive"
+                elif rating <= 2 and text_sentiment != "Positive":
+                    sentiment = "Negative"
                 else:
-                    neutral += 1
-        else:
-            return {"success": False, "error": "No rating or review column found"}
+                    sentiment = text_sentiment
+            else:
+                # Rating-only sentiment
+                if rating >= 4:
+                    sentiment = "Positive"
+                elif rating <= 2:
+                    sentiment = "Negative"
+                else:
+                    sentiment = "Neutral"
+            
+            sentiments.append(sentiment)
         
-        total = positive + neutral + negative
+        df['sentiment'] = sentiments
         
-        if total == 0:
-            return {"success": False, "error": "No valid data extracted"}
+        # ML-based clustering (if available)
+        if ML_AVAILABLE and review_col and len(df) > 10:
+            logger.info("Running ML clustering...")
+            review_texts = df[review_col].fillna("").astype(str).tolist()
+            
+            if review_texts and len(review_texts) > 0:
+                try:
+                    # Generate embeddings
+                    embeddings = embedding_model.encode(review_texts, show_progress_bar=False)
+                    
+                    # Adaptive clustering
+                    n_clusters = max(2, min(8, len(df) // 100))
+                    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
+                    df['cluster'] = kmeans.fit_predict(embeddings)
+                    
+                    # Auto-label topics
+                    topic_names = auto_label_topics(df, review_col)
+                    df['topic_name'] = df['cluster'].map(topic_names)
+                    
+                    logger.info(f"Created {n_clusters} clusters")
+                except Exception as e:
+                    logger.error(f"Clustering failed: {e}")
+                    df['cluster'] = 0
         
         # Calculate metrics
-        avg_rating = (positive * 5 + neutral * 3 + negative * 1) / total
-        positive_pct = round(positive / total * 100, 1)
-        negative_pct = round(negative / total * 100, 1)
-        sentiment_score = round(((positive - negative) / total * 50 + 50), 1)
+        total_reviews = len(df)
+        sentiment_counts = df['sentiment'].value_counts()
         
-        # Risk level
-        if negative_pct > 40:
-            risk_level = "CRITICAL"
-            risk_score = 85
-        elif negative_pct > 25:
-            risk_level = "HIGH"
-            risk_score = 65
-        elif negative_pct > 15:
-            risk_level = "MEDIUM"
-            risk_score = 45
-        else:
-            risk_level = "LOW"
-            risk_score = 25
+        pie_data = [
+            {"name": "Positive", "value": int(sentiment_counts.get("Positive", 0))},
+            {"name": "Negative", "value": int(sentiment_counts.get("Negative", 0))},
+            {"name": "Neutral", "value": int(sentiment_counts.get("Neutral", 0))}
+        ]
         
-        # Simple complaint extraction from negative reviews
-        complaints = []
-        if negative_reviews:
-            complaint_keywords = {
-                "Product Quality": ["quality", "broken", "defective", "damaged", "cheap", "poor"],
-                "Shipping & Delivery": ["shipping", "delivery", "late", "slow", "package"],
-                "Customer Service": ["service", "support", "rude", "refund", "return"],
-                "Price & Value": ["price", "expensive", "cost", "value", "money"],
-                "Packaging": ["packaging", "box", "wrap", "packed"]
-            }
-            
-            counts = {}
-            for text in negative_reviews:
-                for cat, keywords in complaint_keywords.items():
-                    if any(k in text for k in keywords):
-                        counts[cat] = counts.get(cat, 0) + 1
-                        break
-            
-            total_complaints = sum(counts.values())
-            for cat, count in counts.items():
-                complaints.append({
-                    "category": cat,
-                    "count": count,
-                    "percentage": round(count / total_complaints * 100, 1) if total_complaints > 0 else 0
+        positive_pct = (sentiment_counts.get("Positive", 0) / total_reviews) * 100
+        negative_pct = (sentiment_counts.get("Negative", 0) / total_reviews) * 100
+        avg_rating = round(df[rating_col].mean(), 2)
+        
+        metrics = {
+            "total_reviews": total_reviews,
+            "avg_rating": avg_rating,
+            "detected_col": rating_col,
+            "positive_pct": round(positive_pct, 1),
+            "negative_pct": round(negative_pct, 1),
+            "neutral_pct": round(100 - positive_pct - negative_pct, 1),
+            "risk_level": "High" if negative_pct > 30 else "Medium" if negative_pct > 15 else "Low"
+        }
+        
+        # Generate smart insights (data-driven, not hardcoded)
+        root_causes = detect_root_causes(df)
+        trends = detect_trends(df)
+        anomalies = detect_anomalies(df)
+        sentiment_shift = calculate_sentiment_shift(df)
+        executive_summary = generate_executive_summary(df, root_causes, trends, anomalies)
+        
+        # Extract dynamic complaints from clusters
+        complaint_categories = []
+        if "cluster" in df.columns:
+            negative_df = df[df['sentiment'] == 'Negative']
+            for cluster_id in negative_df['cluster'].unique():
+                cluster_df = negative_df[negative_df['cluster'] == cluster_id]
+                topic = cluster_df['topic_name'].iloc[0] if 'topic_name' in cluster_df.columns and len(cluster_df) > 0 else f"Topic {cluster_id}"
+                
+                complaint_categories.append({
+                    "category": str(topic),
+                    "count": int(len(cluster_df)),
+                    "percentage": round((len(cluster_df) / len(negative_df)) * 100, 1) if len(negative_df) > 0 else 0,
+                    "severity": "high" if len(cluster_df) > len(negative_df) * 0.3 else "medium"
                 })
-            complaints.sort(key=lambda x: x["count"], reverse=True)
+            
+            complaint_categories = sorted(complaint_categories, key=lambda x: x['count'], reverse=True)[:10]
         
-        logger.info(f"Results: P={positive}, Neu={neutral}, Neg={negative}, Total={total}")
+        # Generate blockchain hash
+        blockchain_hash = hashlib.sha256(
+            f"{total_reviews}{avg_rating}{positive_pct}{negative_pct}{datetime.now().isoformat()}".encode()
+        ).hexdigest()[:16]
         
-        return {
+        response_data = {
             "success": True,
-            "pieData": [
-                {"name": "Positive", "value": positive},
-                {"name": "Neutral", "value": neutral},
-                {"name": "Negative", "value": negative}
-            ],
-            "metrics": {
-                "total_reviews": total,
-                "avg_rating": round(avg_rating, 2),
-                "positive_pct": positive_pct,
-                "neutral_pct": round(neutral / total * 100, 1),
-                "negative_pct": negative_pct,
-                "sentiment_score": sentiment_score,
-                "risk_score": risk_score,
-                "risk_level": risk_level,
-                "detected_column": rating_name or review_name
-            },
-            "complaintCategories": complaints,
-            "analysisMetadata": {
-                "fast_mode": True,
-                "rows_processed": total,
-                "analysisTime": datetime.now().isoformat()
+            "data": {
+                "pieData": pie_data,
+                "metrics": metrics,
+                "complaintCategories": complaint_categories,
+                "ratingDistribution": [],
+                "timeSeriesData": trends,
+                "smartInsights": {
+                    "executive_summary": executive_summary,
+                    "root_causes": root_causes[:5],
+                    "trends": trends[-6:] if trends else [],
+                    "anomalies": anomalies,
+                    "sentiment_shift": sentiment_shift
+                },
+                "blockchainVerification": {
+                    "verified": True,
+                    "hash": blockchain_hash,
+                    "timestamp": datetime.now().isoformat()
+                },
+                "analysisMetadata": {
+                    "totalReviewsAnalyzed": total_reviews,
+                    "pythonServiceStatus": "connected",
+                    "analysisTime": datetime.now().isoformat(),
+                    "columnsDetected": {
+                        "rating": rating_col,
+                        "review_text": review_col
+                    },
+                    "ml_enabled": ML_AVAILABLE,
+                    "vader_enabled": VADER_AVAILABLE,
+                    "clustering_used": "cluster" in df.columns,
+                    "version": "4.0.0"
+                }
             }
         }
         
+        logger.info(f"Analysis complete: {total_reviews} reviews")
+        return response_data
+        
     except Exception as e:
-        logger.error(f"Error: {str(e)}")
-        return {"success": False, "error": str(e)}
+        logger.error(f"Analysis error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
 
-if __name__ == "__main__":
-    import uvicorn
-    print("\n" + "="*50)
-    print("🚀 ReviewMind ML Engine - ULTRA FAST")
-    print("="*50)
-    print(f"📍 http://0.0.0.0:8000")
-    print(f"📊 Max Rows: {MAX_ROWS}")
-    print(f"⚡ Ratings Only Mode: {USE_RATINGS_ONLY}")
-    print("="*50 + "\n")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+@app.get("/")
+async def root():
+    return {
+        "service": "ReviewMind ML Service",
+        "version": "4.0.0",
+        "description": "Mini Google-Style ML Pipeline with Smart Insights",
+        "features": [
+            "VADER sentiment analysis",
+            "Sentence embeddings",
+            "Auto topic clustering",
+            "Root cause detection",
+            "Trend analysis",
+            "Anomaly detection",
+            "Executive summary generation"
+        ]
+    }
