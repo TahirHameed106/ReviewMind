@@ -12,7 +12,6 @@ const reportGenerator = require('../services/pdfGenerator');
 
 const ML_URL = process.env.ML_SERVICE_URL || 'http://127.0.0.1:8000';
 
-// Session store
 const sessionStore = new Map();
 setInterval(() => {
     const cutoff = Date.now() - 3600000;
@@ -25,11 +24,16 @@ const upload = multer({
     limits: { fileSize: 200 * 1024 * 1024 },
 });
 
-// ML Upload & Analyze
+function dbLog(sql, params) {
+    try {
+        require('../db/connection').query(sql, params).catch(() => {});
+    } catch (_) {}
+}
+
+// ML Upload
 router.post('/ml/upload-analyze', upload.single('file'), async (req, res) => {
     if (!req.file) return res.status(400).json({ success: false, error: 'CSV file required' });
     const filePath = req.file.path;
-    
     try {
         const form = new FormData();
         form.append('file', fs.createReadStream(filePath), {
@@ -37,31 +41,23 @@ router.post('/ml/upload-analyze', upload.single('file'), async (req, res) => {
             contentType: 'text/csv',
         });
 
-        console.log(`[ML] → Python: ${req.file.originalname}`);
         const mlRes = await axios.post(`${ML_URL}/analyze/dashboard-data`, form, {
             headers: form.getHeaders(),
             timeout: 300000,
         });
 
-        if (!mlRes.data?.success) {
-            throw new Error(mlRes.data?.detail || mlRes.data?.error || 'Python analysis failed');
-        }
+        if (!mlRes.data?.success) throw new Error(mlRes.data?.detail || 'Python analysis failed');
 
         const realData = mlRes.data.data;
         const sessionId = `session_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
 
-        // Store COMPLETE data including complaints
         sessionStore.set(sessionId, {
-            pieData: realData.pieData || [],
-            metrics: realData.metrics || {},
-            complaintCategories: realData.complaintCategories || [],
+            ...realData,
             filename: req.file.originalname,
             analyzedAt: new Date().toISOString(),
         });
 
-        console.log(`[ML] Done. Session: ${sessionId} | Total: ${realData.metrics?.total_reviews || 0} | Complaints: ${realData.complaintCategories?.length || 0}`);
-
-        return res.json({
+        res.json({
             success: true,
             sessionId,
             data: realData,
@@ -71,13 +67,13 @@ router.post('/ml/upload-analyze', upload.single('file'), async (req, res) => {
                 pythonServiceStatus: 'Connected',
             },
         });
-
     } catch (err) {
         console.error('[ML] Error:', err.message);
         if (err.code === 'ECONNREFUSED') {
-            return res.status(503).json({ success: false, error: 'Python ML service not running on port 8000' });
+            res.status(503).json({ success: false, error: 'Python ML service not running on port 8000' });
+        } else {
+            res.status(500).json({ success: false, error: err.response?.data?.detail || err.message });
         }
-        return res.status(500).json({ success: false, error: err.response?.data?.detail || err.message });
     } finally {
         try { fs.unlinkSync(filePath); } catch (_) {}
     }
@@ -93,24 +89,21 @@ router.get('/ml/health', async (req, res) => {
     }
 });
 
-// Chat Conversation - FIXED to pass complaints correctly
+// Chat Conversation
 router.post('/chat/conversation', async (req, res) => {
     try {
         const { sessionId, analysisContext } = req.body;
         let context = null;
 
-        // Prefer server-side session (has full data)
         if (sessionId && sessionStore.has(sessionId)) {
             const s = sessionStore.get(sessionId);
             context = {
                 pieData: s.pieData || [],
                 metrics: s.metrics || {},
                 complaintCategories: s.complaintCategories || [],
-                complaints: s.complaintCategories || [],
                 filename: s.filename || 'uploaded CSV',
             };
         } else if (analysisContext) {
-            // Frontend-sent context
             context = analysisContext;
         }
 
@@ -121,7 +114,6 @@ router.post('/chat/conversation', async (req, res) => {
         const conversationId = conversationManager.createConversation(context);
         res.json({ success: true, conversationId });
     } catch (e) {
-        console.error('[Chat] Error:', e);
         res.status(500).json({ success: false, error: e.message });
     }
 });
@@ -136,7 +128,6 @@ router.post('/chat/message', async (req, res) => {
         const result = await conversationManager.addMessage(conversationId, message);
         res.json({ success: true, ...result });
     } catch (e) {
-        console.error('[Chat] Error:', e);
         res.status(500).json({ success: false, error: e.message });
     }
 });

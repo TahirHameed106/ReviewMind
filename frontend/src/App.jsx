@@ -1,224 +1,95 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import axios from 'axios';
 import {
-  Area,
-  AreaChart,
-  Bar,
-  BarChart,
-  Cell,
-  CartesianGrid,
-  Legend,
-  Line,
-  LineChart,
-  Pie,
-  PieChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis
+  Bar, BarChart, Cell, CartesianGrid, Legend,
+  Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis
 } from 'recharts';
 import {
-  AlertCircle,
-  ArrowRight,
-  CheckCircle2,
-  Download,
-  EyeOff,
-  FileText,
-  Fingerprint,
-  KeyRound,
-  LayoutDashboard,
-  LogIn,
-  LogOut,
-  MessageCircle,
-  Moon,
-  QrCode,
-  RefreshCcw,
-  Send,
-  ShieldCheck,
-  Sun,
-  Upload,
-  UserPlus,
-  Zap
+  AlertCircle, ArrowRight, CheckCircle2, Download, EyeOff,
+  FileText, Fingerprint, KeyRound, LayoutDashboard, LogIn,
+  LogOut, MessageCircle, Moon, QrCode, RefreshCcw, Send,
+  ShieldCheck, Sun, Upload, UserPlus, Zap
 } from 'lucide-react';
 
-const API_BASE = 'http://localhost:3000';
+const API_BASE = 'https://reviewmind-production.up.railway.app';
+
 const STORAGE_KEYS = {
   token: 'reviewmind_token',
   email: 'reviewmind_email',
-  plan: 'reviewmind_plan',
-  debug: 'reviewmind_debug_mode',
-  theme: 'reviewmind_theme'
+  plan:  'reviewmind_plan',
+  theme: 'reviewmind_theme',
 };
 
-const SUBSCRIPTION_PLANS = {
+const PLANS = {
   basic: {
-    key: 'basic',
-    name: 'Basic Free',
-    price: '$0',
-    description: 'Core review analysis with limited export and collaboration features.',
-    accent: '#64748b',
-    features: {
-      analysis: true,
-      timeSeries: true,
-      blockchain: false,
-      chat: false,
-      report: false,
-      debug: false
-    }
+    key: 'basic', name: 'Basic Free', price: '$0', accent: '#64748b',
+    features: { analysis: true, timeSeries: true, blockchain: false, chat: false, report: false, debug: false },
   },
   business: {
-    key: 'business',
-    name: 'Small Business',
-    price: '$150',
-    description: 'Adds reporting, blockchain verification, and the assistant for team workflows.',
-    accent: '#2563eb',
-    features: {
-      analysis: true,
-      timeSeries: true,
-      blockchain: true,
-      chat: true,
-      report: true,
-      debug: false
-    }
+    key: 'business', name: 'Small Business', price: '$150', accent: '#2563eb',
+    features: { analysis: true, timeSeries: true, blockchain: true, chat: true, report: true, debug: false },
   },
   enterprise: {
-    key: 'enterprise',
-    name: 'Enterprise',
-    price: '$200',
-    description: 'Unlocks the full workspace with advanced visibility and debug tooling.',
-    accent: '#7c3aed',
-    features: {
-      analysis: true,
-      timeSeries: true,
-      blockchain: true,
-      chat: true,
-      report: true,
-      debug: true
-    }
-  }
+    key: 'enterprise', name: 'Enterprise', price: '$200', accent: '#7c3aed',
+    features: { analysis: true, timeSeries: true, blockchain: true, chat: true, report: true, debug: true },
+  },
 };
 
 const PLAN_ORDER = ['basic', 'business', 'enterprise'];
 
-const SENTIMENT_COLORS = {
-  Negative: '#dc2626',
-  Neutral: '#d97706',
-  Positive: '#059669'
-};
+const SENTIMENT_COLORS = { Positive: '#059669', Negative: '#dc2626', Neutral: '#d97706' };
 
-const initialAnalysis = {
-  pieData: [],
-  timeSeriesData: [],
-  metrics: {
-    total_reviews: 0,
-    avg_rating: 0,
-    detected_col: 'rating'
-  },
-  blockchainVerification: null,
-  analysisMetadata: null,
-  complaintCategories: [],
-  ratingDistribution: []
+const emptyAnalysis = {
+  pieData: [], metrics: { total_reviews: 0, avg_rating: 0, detected_col: '', risk_level: '' },
+  complaintCategories: [], ratingDistribution: [], analysisMetadata: null, blockchainVerification: null,
 };
 
 const defaultProgress = [
-  { key: 'upload', label: 'CSV uploaded', status: 'idle' },
-  { key: 'parse', label: 'CSV parsed', status: 'idle' },
-  { key: 'python', label: 'Python analysis', status: 'idle' },
-  { key: 'blockchain', label: 'Blockchain verification', status: 'idle' },
-  { key: 'dashboard', label: 'Dashboard ready', status: 'idle' }
+  { key: 'upload',     label: 'CSV uploaded',            status: 'idle' },
+  { key: 'parse',      label: 'CSV parsed',               status: 'idle' },
+  { key: 'python',     label: 'Python analysis',          status: 'idle' },
+  { key: 'blockchain', label: 'Blockchain verification',   status: 'idle' },
+  { key: 'dashboard',  label: 'Dashboard ready',          status: 'idle' },
 ];
 
-const formatNumber = (value) => {
-  const numericValue = Number(value);
-  return Number.isFinite(numericValue) ? numericValue.toLocaleString() : '0';
+// ─── helpers ─────────────────────────────────────────────────────
+const fmt = (v) => { const n = Number(v); return Number.isFinite(n) ? n.toLocaleString() : '0'; };
+const readLocal = (k, def = null) => { try { return localStorage.getItem(k) ?? def; } catch { return def; } };
+const writeLocal = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+const removeLocal = (k) => { try { localStorage.removeItem(k); } catch {} };
+
+const readSession = () => {
+  const token = readLocal(STORAGE_KEYS.token);
+  if (!token) return null;
+  return {
+    token,
+    email: readLocal(STORAGE_KEYS.email, ''),
+    plan:  PLANS[readLocal(STORAGE_KEYS.plan)] ? readLocal(STORAGE_KEYS.plan) : 'basic',
+  };
 };
 
-const readStoredSession = () => {
-  if (typeof window === 'undefined') {
-    return null;
-  }
-
-  const token = window.localStorage.getItem(STORAGE_KEYS.token);
-  const email = window.localStorage.getItem(STORAGE_KEYS.email);
-  const plan = window.localStorage.getItem(STORAGE_KEYS.plan);
-
-  if (!token) {
-    return null;
-  }
-
-  return { token, email: email || '', plan: SUBSCRIPTION_PLANS[plan] ? plan : 'basic' };
-};
-
-const readDebugPreference = () => {
-  if (typeof window === 'undefined') {
-    return false;
-  }
-
-  const params = new URLSearchParams(window.location.search);
-  return params.get('debug') === '1' || window.localStorage.getItem(STORAGE_KEYS.debug) === '1';
-};
-
-const readResetTokenFromUrl = () => {
-  if (typeof window === 'undefined') {
-    return '';
-  }
-
-  const params = new URLSearchParams(window.location.search);
-  return params.get('resetToken') || '';
-};
-
-const readStoredTheme = () => {
-  if (typeof window === 'undefined') {
-    return 'light';
-  }
-
-  const stored = window.localStorage.getItem(STORAGE_KEYS.theme);
-  return stored === 'dark' ? 'dark' : 'light';
-};
-
-const persistTheme = (theme) => {
-  if (typeof window === 'undefined') {
-    return;
-  }
-
-  window.localStorage.setItem(STORAGE_KEYS.theme, theme);
-  document.documentElement.setAttribute('data-theme', theme);
-};
-
-const readStoredPlan = () => {
-  if (typeof window === 'undefined') {
-    return 'basic';
-  }
-
-  const storedPlan = window.localStorage.getItem(STORAGE_KEYS.plan);
-  return SUBSCRIPTION_PLANS[storedPlan] ? storedPlan : 'basic';
-};
-
-const persistSession = (session) => {
-  if (typeof window === 'undefined') {
-    return;
-  }
-
-  if (session?.token) {
-    window.localStorage.setItem(STORAGE_KEYS.token, session.token);
-    window.localStorage.setItem(STORAGE_KEYS.email, session.email || '');
-    window.localStorage.setItem(STORAGE_KEYS.plan, session.plan || 'basic');
+const saveSession = (s) => {
+  if (s?.token) {
+    writeLocal(STORAGE_KEYS.token, s.token);
+    writeLocal(STORAGE_KEYS.email, s.email || '');
+    writeLocal(STORAGE_KEYS.plan,  s.plan  || 'basic');
   } else {
-    window.localStorage.removeItem(STORAGE_KEYS.token);
-    window.localStorage.removeItem(STORAGE_KEYS.email);
-    window.localStorage.removeItem(STORAGE_KEYS.plan);
+    removeLocal(STORAGE_KEYS.token);
+    removeLocal(STORAGE_KEYS.email);
+    removeLocal(STORAGE_KEYS.plan);
   }
 };
+
+// ─── small components ─────────────────────────────────────────────
+const Badge = ({ tone = 'neutral', children }) => <span className={`badge badge--${tone}`}>{children}</span>;
 
 const StatCard = ({ icon: Icon, label, value, caption, accent = '#2563eb' }) => (
   <div className="stat-card" style={{ '--accent': accent }}>
-    <div className="stat-card__icon">
-      <Icon size={20} />
-    </div>
+    <div className="stat-card__icon"><Icon size={20} /></div>
     <div className="stat-card__body">
       <div className="stat-card__label">{label}</div>
       <div className="stat-card__value">{value}</div>
-      {caption ? <div className="stat-card__caption">{caption}</div> : null}
+      {caption && <div className="stat-card__caption">{caption}</div>}
     </div>
   </div>
 );
@@ -226,1157 +97,615 @@ const StatCard = ({ icon: Icon, label, value, caption, accent = '#2563eb' }) => 
 const Panel = ({ title, subtitle, action, children, className = '' }) => (
   <section className={`panel ${className}`.trim()}>
     <div className="panel__header">
-      <div>
-        <h3>{title}</h3>
-        {subtitle ? <p>{subtitle}</p> : null}
-      </div>
+      <div><h3>{title}</h3>{subtitle && <p>{subtitle}</p>}</div>
       {action}
     </div>
     {children}
   </section>
 );
 
-const Badge = ({ tone = 'neutral', children }) => <span className={`badge badge--${tone}`}>{children}</span>;
+const Empty = ({ title, description }) => (
+  <div className="empty-state"><strong>{title}</strong><p>{description}</p></div>
+);
 
-const getSentimentColor = (name) => SENTIMENT_COLORS[name] || '#2563eb';
-
-const generateInsights = (analysis) => {
-  if (!analysis?.pieData || analysis.pieData.length === 0) {
-    return null;
-  }
-
-  const totalReviews = analysis.pieData.reduce((sum, item) => sum + (item.value || 0), 0);
-  if (totalReviews === 0) return null;
-
-  const positive = analysis.pieData.find((item) => item.name === 'Positive')?.value || 0;
-  const negative = analysis.pieData.find((item) => item.name === 'Negative')?.value || 0;
-  const neutral = analysis.pieData.find((item) => item.name === 'Neutral')?.value || 0;
-
-  const positivePercent = Math.round((positive / totalReviews) * 100);
-  const negativePercent = Math.round((negative / totalReviews) * 100);
-  const avgRating = analysis.metrics?.avg_rating || 0;
-
-  const insights = [];
-
-  if (negativePercent >= 30) {
-    insights.push({
-      title: 'Address negative sentiment',
-      description: `${negativePercent}% of reviews express negative sentiment. Focus on the main pain points first to improve customer satisfaction.`
-    });
-  }
-
-  if (positivePercent >= 60) {
-    insights.push({
-      title: 'Capitalize on positive momentum',
-      description: `${positivePercent}% of customers are happy. Promote these positive experiences and identify what's working well.`
-    });
-  }
-
-  if (avgRating < 3) {
-    insights.push({
-      title: 'Rating trend requires attention',
-      description: `Average rating of ${avgRating.toFixed(1)}/5 indicates significant room for improvement. Investigate the root causes of low ratings.`
-    });
-  } else if (avgRating >= 4) {
-    insights.push({
-      title: 'Strong customer satisfaction',
-      description: `Average rating of ${avgRating.toFixed(1)}/5 shows strong customer satisfaction. Use this data to guide product development.`
-    });
-  }
-
-  if (neutral >= 20 && neutral <= 40) {
-    insights.push({
-      title: 'Engage neutral reviewers',
-      description: `${Math.round((neutral / totalReviews) * 100)}% of feedback is neutral. These customers have untapped potential—consider improvements that could convert them to positive.`
-    });
-  }
-
-  return insights.length > 0 ? insights : null;
-};
-
-const SentimentEmptyState = ({ title, description }) => (
-  <div className="empty-state">
-    <strong>{title}</strong>
-    <p>{description}</p>
+// ─── Auth Tabs ───────────────────────────────────────────────────
+const AuthTabs = ({ view, onChange }) => (
+  <div className="auth-tabs">
+    {[
+      { key: 'login',  label: 'Sign in',        icon: LogIn    },
+      { key: 'signup', label: 'Create account',  icon: UserPlus },
+      { key: 'forgot', label: 'Forgot password', icon: EyeOff   },
+      { key: 'mfa',    label: 'MFA verify',      icon: KeyRound },
+    ].map(({ key, label, icon: Icon }) => (
+      <button key={key} type="button"
+        className={view === key ? 'auth-tab auth-tab--active' : 'auth-tab'}
+        onClick={() => onChange(key)}>
+        <Icon size={16} />{label}
+      </button>
+    ))}
   </div>
 );
 
-const AuthTabs = ({ view, onChange }) => {
-  const tabs = [
-    { key: 'login', label: 'Sign in', icon: LogIn },
-    { key: 'signup', label: 'Create account', icon: UserPlus },
-    { key: 'forgot', label: 'Forgot password', icon: EyeOff },
-    { key: 'mfa', label: 'MFA verify', icon: KeyRound }
-  ];
-
-  return (
-    <div className="auth-tabs">
-      {tabs.map(({ key, label, icon: Icon }) => (
-        <button
-          key={key}
-          type="button"
-          className={view === key ? 'auth-tab auth-tab--active' : 'auth-tab'}
-          onClick={() => onChange(key)}
-        >
-          <Icon size={16} />
-          {label}
-        </button>
-      ))}
-    </div>
-  );
-};
-
-const ChatDrawer = ({ analysis, onClose }) => {
-  const [conversationId, setConversationId] = useState('');
+// ─── Chat Drawer ─────────────────────────────────────────────────
+const ChatDrawer = ({ analysis, sessionId, onClose }) => {
+  const [convId, setConvId]     = useState('');
   const [messages, setMessages] = useState([
-    { role: 'assistant', content: 'Ask me about the review trends, customer sentiment, risks, or next actions.' }
+    { role: 'assistant', content: 'Ask me about your review data — sentiment, complaints, risks, or next actions.' }
   ]);
-  const [message, setMessage] = useState('');
+  const [msg, setMsg]   = useState('');
   const [busy, setBusy] = useState(false);
-  const endRef = useRef(null);
+  const endRef          = useRef(null);
+
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
   useEffect(() => {
-    const bootstrap = async () => {
-      try {
-        const response = await axios.post(`${API_BASE}/api/advanced/chat/conversation`, {
-          analysisContext: {
-            totalReviews: analysis?.metrics?.total_reviews || 0,
-            avgRating: analysis?.metrics?.avg_rating || 0,
-            sentimentData: analysis?.pieData || [],
-            metrics: analysis?.metrics || {},
-            complaints: analysis?.complaintCategories || []
-          }
-        });
+    if (!analysis?.pieData?.length) return;
+    axios.post(`${API_BASE}/api/advanced/chat/conversation`, {
+      sessionId,
+      analysisContext: {
+        sentimentData:  analysis.pieData          || [],
+        complaints:     analysis.complaintCategories || [],
+        metrics:        analysis.metrics          || {},
+        filename:       analysis.analysisMetadata?.filename || 'uploaded CSV',
+      },
+    })
+      .then(r => { if (r.data.conversationId) setConvId(r.data.conversationId); })
+      .catch(() => setMessages(p => [...p, { role: 'assistant', content: 'Chat service unavailable right now.' }]));
+  }, [analysis, sessionId]);
 
-        if (response.data.conversationId) {
-          setConversationId(response.data.conversationId);
-        }
-      } catch (error) {
-        console.error('Chat bootstrap error:', error);
-        setMessages((prev) => [
-          ...prev,
-          { role: 'assistant', content: 'Chat service is not reachable right now. You can still continue the analysis.' }
-        ]);
-      }
-    };
-
-    if (analysis?.pieData?.length > 0) {
-      bootstrap();
-    }
-  }, [analysis]);
-
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
-
-  const sendMessage = async () => {
-    const trimmed = message.trim();
-    if (!trimmed || !conversationId || busy) return;
-
-    setMessage('');
-    setMessages((prev) => [...prev, { role: 'user', content: trimmed }]);
+  const send = async () => {
+    const t = msg.trim();
+    if (!t || !convId || busy) return;
+    setMsg('');
+    setMessages(p => [...p, { role: 'user', content: t }]);
     setBusy(true);
-
     try {
-      const response = await axios.post(`${API_BASE}/api/advanced/chat/message`, {
-        conversationId,
-        message: trimmed
-      });
-
-      if (response.data.assistantResponse) {
-        setMessages((prev) => [...prev, { role: 'assistant', content: response.data.assistantResponse }]);
-      } else {
-        throw new Error('No response from server');
-      }
-    } catch (error) {
-      console.error('Send message error:', error);
-      setMessages((prev) => [...prev, { role: 'assistant', content: 'I could not answer that right now. Please try again in a moment.' }]);
-    } finally {
-      setBusy(false);
-    }
+      const r = await axios.post(`${API_BASE}/api/advanced/chat/message`, { conversationId: convId, message: t });
+      const reply = r.data.assistantResponse || r.data.reply || 'No response received.';
+      setMessages(p => [...p, { role: 'assistant', content: reply }]);
+    } catch {
+      setMessages(p => [...p, { role: 'assistant', content: 'Could not reach the assistant. Try again.' }]);
+    } finally { setBusy(false); }
   };
 
   return (
     <div className="chat-drawer">
       <div className="chat-drawer__header">
-        <div>
-          <div className="chat-drawer__eyebrow">ReviewMind AI</div>
-          <h3>Strategy Assistant</h3>
-        </div>
-        <button className="icon-button" onClick={onClose} aria-label="Close chat">
-          <ArrowRight size={18} />
-        </button>
+        <div><div className="chat-drawer__eyebrow">ReviewMind AI</div><h3>Strategy Assistant</h3></div>
+        <button className="icon-button" onClick={onClose}><ArrowRight size={18} /></button>
       </div>
-
       <div className="chat-drawer__messages">
-        {messages.map((entry, index) => (
-          <div key={`${entry.role}-${index}`} className={`chat-bubble chat-bubble--${entry.role}`}>
-            {entry.content}
-          </div>
+        {messages.map((m, i) => (
+          <div key={i} className={`chat-bubble chat-bubble--${m.role}`}>{m.content}</div>
         ))}
         <div ref={endRef} />
       </div>
-
       <div className="chat-drawer__composer">
-        <input
-          value={message}
-          onChange={(event) => setMessage(event.target.value)}
-          onKeyDown={(event) => event.key === 'Enter' && sendMessage()}
-          placeholder="Ask about the review data..."
-          disabled={busy || !conversationId}
-        />
-        <button className="primary-button" onClick={sendMessage} disabled={busy || !conversationId}>
-          <Send size={16} />
-          Send
+        <input value={msg} onChange={e => setMsg(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && send()}
+          placeholder="Ask about the review data..." disabled={busy || !convId} />
+        <button className="primary-button" onClick={send} disabled={busy || !convId}>
+          <Send size={16} />Send
         </button>
       </div>
     </div>
   );
 };
 
+// ─── Blockchain Panel ────────────────────────────────────────────
 const BlockchainPanel = () => {
-  const [stats, setStats] = useState(null);
-  const [loading, setLoading] = useState(false);
-
-  const loadStats = async () => {
-    setLoading(true);
-    try {
-      const response = await axios.get(`${API_BASE}/api/advanced/blockchain/stats`);
-      setStats(response.data.statistics || null);
-    } catch (error) {
-      setStats(null);
-    } finally {
-      setLoading(false);
-    }
+  const [stats, setStats]   = useState(null);
+  const [loading, setLoad]  = useState(false);
+  const load = async () => {
+    setLoad(true);
+    try { const r = await axios.get(`${API_BASE}/api/advanced/blockchain/stats`); setStats(r.data.statistics || null); }
+    catch { setStats(null); }
+    finally { setLoad(false); }
   };
-
-  useEffect(() => {
-    loadStats();
-  }, []);
-
+  useEffect(() => { load(); }, []);
   return (
     <div className="stack">
       <div className="grid grid--3">
-        <StatCard icon={Fingerprint} label="Verified Reviews" value={formatNumber(stats?.totalReviews || 0)} accent="#0f766e" />
-        <StatCard icon={ShieldCheck} label="Blocks" value={formatNumber(stats?.totalBlocks || 0)} accent="#2563eb" />
-        <StatCard
-          icon={CheckCircle2}
-          label="Chain State"
+        <StatCard icon={Fingerprint}  label="Verified Reviews" value={fmt(stats?.totalReviews || 0)} accent="#0f766e" />
+        <StatCard icon={ShieldCheck}  label="Blocks"           value={fmt(stats?.totalBlocks  || 0)} accent="#2563eb" />
+        <StatCard icon={CheckCircle2} label="Chain State"
           value={stats?.chainValid ? 'VALID' : 'PENDING'}
           accent={stats?.chainValid ? '#059669' : '#d97706'}
-          caption={stats?.chainValid ? 'Integrity verified' : 'Waiting for verification'}
-        />
+          caption={stats?.chainValid ? 'Integrity verified' : 'Waiting'} />
       </div>
-
-      <Panel
-        title="Ledger Integrity"
-        subtitle="Every review can be verified and tampering is detectable through the chain hash."
-        action={
-          <button className="ghost-button" onClick={loadStats} disabled={loading}>
-            <RefreshCcw size={16} />
-            Refresh
-          </button>
-        }
-      >
+      <Panel title="Ledger Integrity"
+        subtitle="Every review can be verified — tampering is detectable through the chain hash."
+        action={<button className="ghost-button" onClick={load} disabled={loading}><RefreshCcw size={16} />Refresh</button>}>
         <div className="integrity-card">
           <div className="integrity-card__icon"><ShieldCheck size={20} /></div>
-          <div>
-            <strong>Blockchain verification is enabled.</strong>
-            <p>Use this section to confirm the ledger state before sharing reports with stakeholders.</p>
-          </div>
+          <div><strong>Blockchain verification is enabled.</strong>
+            <p>Confirm the ledger state before sharing reports with stakeholders.</p></div>
         </div>
       </Panel>
     </div>
   );
 };
 
-const AuthScreen = ({
-  authView,
-  setAuthView,
-  authForm,
-  setAuthForm,
-  authLoading,
-  authError,
-  authNotice,
-  authHint,
-  signupQr,
-  resetLink,
-  resetToken,
-  pendingEmail,
-  signupPlan,
-  setSignupPlan,
-  onSubmit
-}) => (
-  <div className="auth-shell">
-    <div className="ambient ambient--one" />
-    <div className="ambient ambient--two" />
+// ─── Insights generator ───────────────────────────────────────────
+const genInsights = (analysis) => {
+  if (!analysis?.pieData?.length) return null;
+  const tot = analysis.pieData.reduce((s, d) => s + (d.value || 0), 0);
+  if (!tot) return null;
+  const pos     = analysis.pieData.find(d => d.name === 'Positive')?.value || 0;
+  const neg     = analysis.pieData.find(d => d.name === 'Negative')?.value || 0;
+  const neu     = analysis.pieData.find(d => d.name === 'Neutral')?.value  || 0;
+  const posPct  = Math.round(pos / tot * 100);
+  const negPct  = Math.round(neg / tot * 100);
+  const avg     = analysis.metrics?.avg_rating || 0;
+  const out     = [];
+  if (negPct >= 30) out.push({ title: 'Address negative sentiment', description: `${negPct}% negative. Focus on top complaint categories immediately.` });
+  if (posPct >= 60) out.push({ title: 'Capitalize on positive momentum', description: `${posPct}% of customers are satisfied. Leverage these for marketing.` });
+  if (avg < 3)      out.push({ title: 'Rating requires attention',   description: `Average ${avg.toFixed(1)}/5 — investigate root causes.` });
+  else if (avg >= 4) out.push({ title: 'Strong customer satisfaction', description: `Average ${avg.toFixed(1)}/5 — use this data to guide product decisions.` });
+  if (neu > 20)     out.push({ title: 'Engage neutral reviewers',    description: `${Math.round(neu/tot*100)}% neutral — convert them with targeted improvements.` });
+  return out.length ? out : null;
+};
 
-    <div className="auth-grid">
-      <section className="auth-hero">
-        <Badge tone="brand">ReviewMind Secure Access</Badge>
-        <h1>Sign in to the review intelligence workspace.</h1>
-        <p>
-          ReviewMind is built as a secure product flow: authenticate first, then upload data, verify the ledger,
-          chat with the assistant, and export a board-ready report.
-        </p>
-
-        <div className="purpose-strip">
-          <div className="purpose-card">
-            <strong>1. Ingest</strong>
-            <span>Upload CSV review data and run analysis.</span>
-          </div>
-          <div className="purpose-card">
-            <strong>2. Verify</strong>
-            <span>Confirm blockchain integrity before sharing results.</span>
-          </div>
-          <div className="purpose-card">
-            <strong>3. Export</strong>
-            <span>Generate PDF reports and use the chat assistant.</span>
-          </div>
-        </div>
-      </section>
-
-      <section className="auth-card">
-        <AuthTabs view={authView} onChange={setAuthView} />
-
-        {authNotice ? (
-          <div className="notice notice--info">
-            <CheckCircle2 size={16} />
-            <span>{authNotice}</span>
-          </div>
-        ) : null}
-
-        {authHint ? (
-          <div className="notice notice--info">
-            <Fingerprint size={16} />
-            <span>{authHint}</span>
-          </div>
-        ) : null}
-
-        {authError ? (
-          <div className="notice notice--error">
-            <AlertCircle size={16} />
-            <span>{authError}</span>
-          </div>
-        ) : null}
-
-        {signupQr ? (
-          <div className="qr-card">
-            <div className="qr-card__header">
-              <QrCode size={16} />
-              <strong>MFA setup</strong>
-            </div>
-            <img src={signupQr} alt="MFA QR code" />
-            <p>Scan this QR code in your authenticator app, then continue to sign in and verify MFA.</p>
-          </div>
-        ) : null}
-
-        {resetLink ? (
-          <div className="qr-card">
-            <div className="qr-card__header">
-              <KeyRound size={16} />
-              <strong>Password reset link</strong>
-            </div>
-            <p>Open the link below or paste the token into the reset form.</p>
-            <div className="field field--readonly">
-              <span>Reset link</span>
-              <strong style={{ wordBreak: 'break-all' }}>{resetLink}</strong>
-            </div>
-            {resetToken ? (
-              <div className="field field--readonly">
-                <span>Reset token</span>
-                <strong style={{ wordBreak: 'break-all' }}>{resetToken}</strong>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-
-        <form className="auth-form" onSubmit={onSubmit}>
-          {authView === 'forgot' ? (
-            <label className="field">
-              <span>Email</span>
-              <input
-                type="email"
-                autoComplete="email"
-                value={authForm.email}
-                onChange={(event) => setAuthForm((prev) => ({ ...prev, email: event.target.value }))}
-                placeholder="you@company.com"
-                required
-              />
-            </label>
-          ) : authView === 'reset' ? (
-            <>
-              <label className="field">
-                <span>Reset token</span>
-                <input
-                  type="text"
-                  value={authForm.token}
-                  onChange={(event) => setAuthForm((prev) => ({ ...prev, token: event.target.value }))}
-                  placeholder="Paste the token from the reset link"
-                  required
-                />
-              </label>
-
-              <label className="field">
-                <span>New password</span>
-                <input
-                  type="password"
-                  autoComplete="new-password"
-                  value={authForm.newPassword}
-                  onChange={(event) => setAuthForm((prev) => ({ ...prev, newPassword: event.target.value }))}
-                  placeholder="Enter a new password"
-                  required
-                />
-              </label>
-
-              <label className="field">
-                <span>Confirm new password</span>
-                <input
-                  type="password"
-                  autoComplete="new-password"
-                  value={authForm.confirmPassword}
-                  onChange={(event) => setAuthForm((prev) => ({ ...prev, confirmPassword: event.target.value }))}
-                  placeholder="Repeat the new password"
-                  required
-                />
-              </label>
-            </>
-          ) : authView !== 'mfa' ? (
-            <>
-              <label className="field">
-                <span>Email</span>
-                <input
-                  type="email"
-                  autoComplete="email"
-                  value={authForm.email}
-                  onChange={(event) => setAuthForm((prev) => ({ ...prev, email: event.target.value }))}
-                  placeholder="you@company.com"
-                  required
-                />
-              </label>
-
-              <label className="field">
-                <span>Password</span>
-                <input
-                  type="password"
-                  autoComplete={authView === 'signup' ? 'new-password' : 'current-password'}
-                  value={authForm.password}
-                  onChange={(event) => setAuthForm((prev) => ({ ...prev, password: event.target.value }))}
-                  placeholder="Enter your password"
-                  required
-                />
-              </label>
-
-              {authView === 'signup' ? (
-                <div className="field">
-                  <span>Choose your plan</span>
-                  <div className="plan-selector" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: '12px', marginTop: '8px' }}>
-                    {PLAN_ORDER.map((planKey) => {
-                      const plan = SUBSCRIPTION_PLANS[planKey];
-                      if (!plan) return null;
-                      return (
-                        <button
-                          key={plan.key}
-                          type="button"
-                          onClick={() => setSignupPlan(plan.key)}
-                          style={{
-                            padding: '12px',
-                            borderRadius: '8px',
-                            border: signupPlan === plan.key ? `2px solid ${plan.accent}` : `1px solid var(--border)`,
-                            background: signupPlan === plan.key ? 'var(--surface)' : 'transparent',
-                            cursor: 'pointer',
-                            transition: 'all 0.2s ease',
-                            fontWeight: signupPlan === plan.key ? '600' : '500',
-                            fontSize: '14px'
-                          }}
-                        >
-                          <div style={{ fontSize: '13px', fontWeight: '600', marginBottom: '4px' }}>{plan.name}</div>
-                          <div style={{ fontSize: '11px', color: 'var(--text-secondary)' }}>{plan.price}</div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              ) : null}
-            </>
-          ) : (
-            <>
-              <div className="field field--readonly">
-                <span>Account</span>
-                <strong>{pendingEmail || authForm.email || 'Email not set'}</strong>
-              </div>
-
-              <label className="field">
-                <span>MFA code</span>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  autoComplete="one-time-code"
-                  maxLength={6}
-                  value={authForm.token}
-                  onChange={(event) => setAuthForm((prev) => ({ ...prev, token: event.target.value }))}
-                  placeholder="123456"
-                  required
-                />
-              </label>
-            </>
-          )}
-
-          <button className="primary-button auth-submit" type="submit" disabled={authLoading}>
-            {authLoading ? <RefreshCcw size={16} className="spin" /> : authView === 'signup' ? <UserPlus size={16} /> : authView === 'mfa' ? <KeyRound size={16} /> : <LogIn size={16} />}
-            {authLoading ? 'Working...' : authView === 'signup' ? 'Create account' : authView === 'forgot' ? 'Send reset link' : authView === 'reset' ? 'Reset password' : authView === 'mfa' ? 'Verify MFA' : 'Sign in'}
-          </button>
-        </form>
-
-        <div className="auth-footer-actions">
-          {authView === 'signup' ? (
-            <button type="button" className="ghost-button" onClick={() => setAuthView('login')}>
-              Already have an account?
-            </button>
-          ) : null}
-
-          {authView === 'login' && signupQr ? (
-            <button type="button" className="ghost-button" onClick={() => setAuthView('mfa')}>
-              I scanned the QR code
-            </button>
-          ) : null}
-
-          {authView === 'login' ? (
-            <button type="button" className="ghost-button" onClick={() => setAuthView('forgot')}>
-              Forgot password?
-            </button>
-          ) : null}
-
-          {authView === 'mfa' ? (
-            <button type="button" className="ghost-button" onClick={() => setAuthView('login')}>
-              Back to login
-            </button>
-          ) : null}
-
-          {authView === 'forgot' || authView === 'reset' ? (
-            <button type="button" className="ghost-button" onClick={() => setAuthView('login')}>
-              Back to sign in
-            </button>
-          ) : null}
-        </div>
-      </section>
-    </div>
-  </div>
-);
-
-function App() {
-  const [session, setSession] = useState(() => readStoredSession());
-  const [subscriptionPlan, setSubscriptionPlan] = useState(() => readStoredSession()?.plan || readStoredPlan());
-  const [authView, setAuthView] = useState(() => (readResetTokenFromUrl() ? 'reset' : 'login'));
-  const [authForm, setAuthForm] = useState({
-    email: '',
-    password: '',
-    token: readResetTokenFromUrl(),
-    newPassword: '',
-    confirmPassword: ''
-  });
+// ═══════════════════════════════════════════════════════════════════
+//  MAIN APP
+// ═══════════════════════════════════════════════════════════════════
+export default function App() {
+  const [session, setSession]         = useState(readSession);
+  const [plan, setPlan]               = useState(() => readSession()?.plan || 'basic');
+  const [authView, setAuthView]       = useState('login');
+  const [authForm, setAuthForm]       = useState({ email: '', password: '', token: '', newPassword: '', confirmPassword: '', mfaCode: '' });
   const [authLoading, setAuthLoading] = useState(false);
-  const [authError, setAuthError] = useState('');
-  const [authNotice, setAuthNotice] = useState('Sign in to unlock the workspace.');
-  const [authHint, setAuthHint] = useState('');
-  const [signupQr, setSignupQr] = useState('');
-  const [resetLink, setResetLink] = useState('');
-  const [resetToken, setResetToken] = useState(readResetTokenFromUrl());
-  const [pendingEmail, setPendingEmail] = useState('');
-  const [file, setFile] = useState(null);
-  const [analysis, setAnalysis] = useState(initialAnalysis);
-  const [pipelineProgress, setPipelineProgress] = useState(defaultProgress);
-  const [loading, setLoading] = useState(false);
-  const [status, setStatus] = useState('idle');
-  const [error, setError] = useState('');
-  const [tab, setTab] = useState('overview');
-  const [chatOpen, setChatOpen] = useState(false);
-  const [reportStatus, setReportStatus] = useState('No report generated yet.');
-  const [reportBusy, setReportBusy] = useState(false);
-  const [theme, setTheme] = useState(() => readStoredTheme());
-  const [signupPlan, setSignupPlan] = useState('basic');
-  const debugMode = useMemo(() => readDebugPreference(), []);
-  const activePlan = SUBSCRIPTION_PLANS[subscriptionPlan] || SUBSCRIPTION_PLANS.basic;
-  const canUseFeature = (featureKey) => Boolean(activePlan.features?.[featureKey]);
-  const nextPlanKey = PLAN_ORDER[Math.min(PLAN_ORDER.indexOf(subscriptionPlan) + 1, PLAN_ORDER.length - 1)];
+  const [authError, setAuthError]     = useState('');
+  const [authNotice, setAuthNotice]   = useState('Sign in to unlock the workspace.');
+  const [signupQr, setSignupQr]       = useState('');
+  const [resetLink, setResetLink]     = useState('');
+  const [pendingEmail, setPending]    = useState('');
+  const [signupPlan, setSignupPlan]   = useState('basic');
+  const [partialToken, setPartialToken] = useState('');
+  const [mfaQrCode, setMfaQrCode]     = useState('');
+  const [mfaSecret, setMfaSecret]     = useState('');
+
+  const [file, setFile]               = useState(null);
+  const [sessionId, setSessionId]     = useState('');
+  const [analysis, setAnalysis]       = useState(emptyAnalysis);
+  const [progress, setProgress]       = useState(defaultProgress);
+  const [loading, setLoading]         = useState(false);
+  const [status, setStatus]           = useState('idle');
+  const [error, setError]             = useState('');
+  const [tab, setTab]                 = useState('overview');
+  const [chatOpen, setChatOpen]       = useState(false);
+  const [reportStatus, setRptStatus]  = useState('No report generated yet.');
+  const [reportBusy, setRptBusy]      = useState(false);
+  const [theme, setTheme]             = useState(() => readLocal(STORAGE_KEYS.theme, 'light'));
+
+  const activePlan   = PLANS[plan] || PLANS.basic;
+  const can          = (f) => Boolean(activePlan.features?.[f]);
+  const nextPlanKey  = PLAN_ORDER[Math.min(PLAN_ORDER.indexOf(plan) + 1, PLAN_ORDER.length - 1)];
+  const hasAnalysis  = (analysis?.pieData || []).length > 0 && analysis.pieData.some(d => d.value > 0);
+
+  const total    = useMemo(() => analysis.pieData.reduce((s, d) => s + (Number(d.value) || 0), 0), [analysis]);
+  const positive = useMemo(() => analysis.pieData.find(d => d.name === 'Positive')?.value || 0, [analysis]);
+  const negative = useMemo(() => analysis.pieData.find(d => d.name === 'Negative')?.value || 0, [analysis]);
+  const neutral  = useMemo(() => analysis.pieData.find(d => d.name === 'Neutral')?.value  || 0, [analysis]);
+  const chartData= useMemo(() => analysis.pieData.map(d => ({ ...d, value: Number(d.value)||0, fill: SENTIMENT_COLORS[d.name] || '#2563eb' })), [analysis]);
 
   useEffect(() => {
-    persistTheme(theme);
+    writeLocal(STORAGE_KEYS.theme, theme);
+    document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
 
   useEffect(() => {
-    const urlResetToken = readResetTokenFromUrl();
-    if (urlResetToken) {
-      setAuthView('reset');
-      setAuthForm((prev) => ({ ...prev, token: urlResetToken }));
-      setResetToken(urlResetToken);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (session?.token) {
-      axios.defaults.headers.common.Authorization = `Bearer ${session.token}`;
-    } else {
-      delete axios.defaults.headers.common.Authorization;
-    }
+    if (session?.token) axios.defaults.headers.common.Authorization = `Bearer ${session.token}`;
+    else delete axios.defaults.headers.common.Authorization;
   }, [session]);
 
   useEffect(() => {
-    const loadSubscription = async () => {
-      if (!session?.token) {
-        return;
-      }
-
-      try {
-        const response = await axios.get(`${API_BASE}/api/user/subscription`);
-        const serverPlan = SUBSCRIPTION_PLANS[response.data?.subscriptionPlan] ? response.data.subscriptionPlan : 'basic';
-        setSubscriptionPlan(serverPlan);
-        setSession((currentSession) => {
-          if (!currentSession) {
-            return currentSession;
-          }
-
-          const nextSession = { ...currentSession, plan: serverPlan };
-          persistSession(nextSession);
-          return nextSession;
-        });
-      } catch (error) {
-        if (error.response?.status === 401 || error.response?.status === 403) {
-          persistSession(null);
-          setSession(null);
-          setSubscriptionPlan('basic');
-          setAuthView('login');
-          setAuthNotice('Your session expired. Please sign in again.');
-          return;
+    if (!session?.token) return;
+    axios.get(`${API_BASE}/api/user/subscription`)
+      .then(r => {
+        const sp = PLANS[r.data?.subscriptionPlan] ? r.data.subscriptionPlan : 'basic';
+        setPlan(sp);
+        setSession(s => { const n = { ...s, plan: sp }; saveSession(n); return n; });
+      })
+      .catch(e => {
+        if (e.response?.status === 401 || e.response?.status === 403) {
+          saveSession(null); setSession(null); setPlan('basic');
+          setAuthView('login'); setAuthNotice('Session expired. Sign in again.');
         }
-
-        const fallbackPlan = session?.plan && SUBSCRIPTION_PLANS[session.plan] ? session.plan : 'basic';
-        setSubscriptionPlan(fallbackPlan);
-      }
-    };
-
-    loadSubscription();
+      });
   }, [session?.token]);
 
-  const hasAnalysis = (analysis?.pieData || []).length > 0;
-  const totalReviews = useMemo(
-    () => analysis?.pieData?.reduce((sum, item) => sum + (Number(item.value) || 0), 0) || 0,
-    [analysis]
-  );
-  const positiveReviews = useMemo(
-    () => analysis?.pieData?.find((item) => item.name === 'Positive')?.value || 0,
-    [analysis]
-  );
-  const negativeReviews = useMemo(
-    () => analysis?.pieData?.find((item) => item.name === 'Negative')?.value || 0,
-    [analysis]
-  );
-  const neutralReviews = useMemo(
-    () => analysis?.pieData?.find((item) => item.name === 'Neutral')?.value || 0,
-    [analysis]
-  );
-  const sentimentChartData = useMemo(
-    () => (analysis?.pieData || []).map((item) => ({
-      ...item,
-      value: Number(item.value) || 0,
-      fill: getSentimentColor(item.name)
-    })),
-    [analysis]
-  );
-
-  const handleAuthSubmit = async (event) => {
-    event.preventDefault();
-    setAuthError('');
-    setAuthNotice('');
-    setAuthLoading(true);
-
+  // ── Auth submit (Register, Login, MFA) ───────────────────────────
+  const handleAuth = async (e) => {
+    e.preventDefault();
+    setAuthError(''); setAuthNotice(''); setAuthLoading(true);
     try {
+      // REGISTER
       if (authView === 'signup') {
-        const response = await axios.post(`${API_BASE}/api/auth/register`, {
-          email: authForm.email,
-          password: authForm.password,
-          subscriptionPlan: signupPlan
+        const r = await axios.post(`${API_BASE}/api/auth/register`, {
+          email: authForm.email, password: authForm.password, subscriptionPlan: signupPlan,
         });
+        const token = r.data.token;
+        // After registration, automatically setup MFA
+        if (token) {
+          const mfaRes = await axios.post(`${API_BASE}/api/auth/setup-mfa`, {}, {
+            headers: { Authorization: `Bearer ${token}` }
+          });
+          setMfaQrCode(mfaRes.data.qrCode);
+          setMfaSecret(mfaRes.data.secret);
+          setAuthNotice('Account created! Scan QR code below with Google Authenticator, then enter the code to enable MFA.');
+          setAuthView('mfa-setup');
+          setSession({ token, email: authForm.email, plan: signupPlan });
+          saveSession({ token, email: authForm.email, plan: signupPlan });
+          return;
+        }
+      }
 
-        setSignupQr(response.data.qrCode || '');
-        setPendingEmail(authForm.email);
-        setAuthForm((prev) => ({ ...prev, password: '', token: '' }));
-        setAuthNotice('Account created. Scan the QR code in your authenticator app, then sign in.');
-        setAuthView('login');
+      // ENABLE MFA (after QR scan)
+      if (authView === 'mfa-setup') {
+        const token = session?.token;
+        if (!token) throw new Error('No token found');
+        const r = await axios.post(`${API_BASE}/api/auth/enable-mfa`, { code: authForm.mfaCode }, {
+          headers: { Authorization: `Bearer ${token}` }
+        });
+        if (r.data.success) {
+          setAuthNotice('MFA enabled successfully! You can now login with MFA.');
+          setAuthView('login');
+          setMfaQrCode('');
+          setMfaSecret('');
+        }
         return;
       }
 
+      // FORGOT PASSWORD
       if (authView === 'forgot') {
-        const response = await axios.post(`${API_BASE}/api/auth/forgot-password`, {
-          email: authForm.email
-        });
-
-        const returnedResetToken = response.data.resetToken || '';
-        const returnedResetLink = response.data.resetLink || '';
-
-        setPendingEmail(authForm.email);
-        setResetToken(returnedResetToken);
-        setResetLink(returnedResetLink);
-        setAuthForm((prev) => ({
-          ...prev,
-          token: returnedResetToken,
-          newPassword: '',
-          confirmPassword: ''
-        }));
-        setAuthNotice('Reset link created. Use the token below to set a new password.');
+        const r = await axios.post(`${API_BASE}/api/auth/forgot-password`, { email: authForm.email });
+        setResetLink(r.data.resetLink || '');
+        setAuthForm(p => ({ ...p, token: r.data.resetToken || '' }));
+        setAuthNotice('Reset token generated. Use it to set a new password.');
         setAuthView('reset');
         return;
       }
 
+      // RESET PASSWORD
       if (authView === 'reset') {
-        if (authForm.newPassword !== authForm.confirmPassword) {
-          setAuthError('The new passwords do not match.');
-          return;
-        }
-
-        const response = await axios.post(`${API_BASE}/api/auth/reset-password`, {
-          token: authForm.token || resetToken,
-          password: authForm.newPassword
-        });
-
-        setAuthNotice(response.data.message || 'Password updated successfully. Sign in with your new password.');
-        setAuthError('');
+        if (authForm.newPassword !== authForm.confirmPassword) { setAuthError('Passwords do not match.'); return; }
+        await axios.post(`${API_BASE}/api/auth/reset-password`, { token: authForm.token, password: authForm.newPassword });
+        setAuthNotice('Password reset. Sign in with your new password.');
         setAuthView('login');
-        setResetLink('');
-        setResetToken('');
-        setAuthForm({
-          email: pendingEmail || '',
-          password: '',
-          token: '',
-          newPassword: '',
-          confirmPassword: ''
-        });
         return;
       }
 
+      // LOGIN — returns token or partialToken for MFA
       if (authView === 'login') {
-        const response = await axios.post(`${API_BASE}/api/auth/login`, {
-          email: authForm.email,
-          password: authForm.password
+        const r = await axios.post(`${API_BASE}/api/auth/login`, {
+          email: authForm.email, password: authForm.password,
         });
 
-        if (response.data?.mfaRequired) {
-          setPendingEmail(response.data.email || authForm.email);
-          setSubscriptionPlan(response.data.subscriptionPlan || 'basic');
-          setAuthForm((prev) => ({ ...prev, token: '' }));
-          setAuthNotice('Password accepted. Enter your six-digit MFA code to finish signing in.');
-          setAuthView('mfa');
+        if (r.data?.mfaRequired) {
+          setPartialToken(r.data.partialToken);
+          setPending(r.data.email || authForm.email);
+          setAuthNotice('Enter your 6-digit MFA code from Google Authenticator.');
+          setAuthView('mfa-verify');
+        } else if (r.data?.token) {
+          const ns = { token: r.data.token, email: authForm.email, plan: r.data.subscriptionPlan || 'basic' };
+          saveSession(ns); setSession(ns); setPlan(ns.plan);
+          setAuthNotice('');
+          setTab('overview');
         }
         return;
       }
 
-      const response = await axios.post(`${API_BASE}/api/auth/verify-mfa`, {
-        email: pendingEmail || authForm.email,
-        token: authForm.token
-      });
+      // VERIFY MFA CODE
+      if (authView === 'mfa-verify') {
+        const r = await axios.post(`${API_BASE}/api/auth/verify-mfa`, {
+          partialToken: partialToken,
+          code: authForm.mfaCode
+        });
+        if (r.data.token) {
+          const ns = { token: r.data.token, email: pendingEmail, plan: 'basic' };
+          saveSession(ns); setSession(ns); setPlan(ns.plan);
+          setAuthNotice('');
+          setTab('overview');
+        }
+        return;
+      }
 
-      const locationStatus = response.data?.mfa_report?.factor_3 || '';
-      setAuthHint(locationStatus ? `Location check: ${locationStatus}` : 'Location check completed.');
-
-      const nextSession = {
-        token: response.data.token,
-        email: pendingEmail || authForm.email,
-        plan: response.data.subscriptionPlan || 'basic'
-      };
-
-      persistSession(nextSession);
-      setSession(nextSession);
-      setSubscriptionPlan(nextSession.plan);
-      setAuthForm({ email: nextSession.email, password: '', token: '' });
-      setAuthNotice('MFA verified. Welcome to the workspace.');
-      setAuthError('');
-      setTab('overview');
-      setReportStatus('No report generated yet.');
-    } catch (authSubmitError) {
-      setAuthError(
-        authSubmitError.response?.data?.error ||
-        authSubmitError.response?.data?.message ||
-        authSubmitError.message ||
-        'Authentication failed.'
-      );
+    } catch (err) {
+      setAuthError(err.response?.data?.error || err.response?.data?.message || err.message || 'Authentication failed.');
     } finally {
       setAuthLoading(false);
     }
   };
 
   const handleLogout = () => {
-    persistSession(null);
-    setSession(null);
-    setSubscriptionPlan('basic');
+    saveSession(null); setSession(null); setPlan('basic');
     setAuthView('login');
-    setAuthForm({ email: '', password: '', token: '', newPassword: '', confirmPassword: '' });
-    setPendingEmail('');
-    setSignupQr('');
-    setResetLink('');
-    setResetToken('');
-    setAuthHint('');
-    setAnalysis(initialAnalysis);
-    setPipelineProgress(defaultProgress);
-    setFile(null);
-    setStatus('idle');
-    setError('');
-    setTab('overview');
-    setChatOpen(false);
-    setReportStatus('No report generated yet.');
+    setAuthForm({ email: '', password: '', token: '', newPassword: '', confirmPassword: '', mfaCode: '' });
+    setAnalysis(emptyAnalysis); setProgress(defaultProgress);
+    setFile(null); setSessionId(''); setStatus('idle'); setError('');
+    setChatOpen(false); setRptStatus('No report generated yet.');
+    setMfaQrCode(''); setMfaSecret(''); setPartialToken('');
   };
 
-  const handlePlanChange = (planKey) => {
-    if (!SUBSCRIPTION_PLANS[planKey]) return;
-
-    const updatePlan = async () => {
-      try {
-        const response = await axios.patch(`${API_BASE}/api/user/subscription`, {
-          plan: planKey,
-          subscriptionPlan: planKey
-        });
-
-        const updatedPlan = response.data.subscriptionPlan;
-        const refreshedToken = response.data.token;
-
-        setSubscriptionPlan(updatedPlan);
-
-        setSession((currentSession) => {
-          if (!currentSession) return currentSession;
-
-          const nextSession = {
-            ...currentSession,
-            plan: updatedPlan,
-            token: refreshedToken
-          };
-
-          persistSession(nextSession);
-          return nextSession;
-        });
-
-        setError('');
-        setStatus('ready');
-        setReportStatus(`Plan upgraded to ${SUBSCRIPTION_PLANS[updatedPlan]?.name || updatedPlan}.`);
-      } catch (error) {
-        if (error.response?.status === 401 || error.response?.status === 403) {
-          persistSession(null);
-          setSession(null);
-          setSubscriptionPlan('basic');
-          setAuthView('login');
-          setAuthNotice('Your session expired. Please sign in again before upgrading.');
-          return;
-        }
-
-        setError(error.response?.data?.error || 'Unable to update subscription plan.');
-      }
-    };
-
-    updatePlan();
-  };
-
-  const handleOpenChat = () => {
-    if (!canUseFeature('chat')) {
-      setTab('reports');
-      setError('Open Chat is unlocked on the Small Business tier and above.');
-      return;
+  // ── Upgrade plan ─────────────────────────────────────────────────
+  const handleUpgrade = async (planKey) => {
+    try {
+      const r = await axios.patch(`${API_BASE}/api/user/subscription`, { plan: planKey, subscriptionPlan: planKey });
+      const up = r.data.subscriptionPlan || planKey;
+      setPlan(up);
+      setSession(s => { const n = { ...s, plan: up, token: r.data.token || s.token }; saveSession(n); return n; });
+      setRptStatus(`Upgraded to ${PLANS[up]?.name || up}.`);
+    } catch (err) {
+      setError(err.response?.data?.error || 'Upgrade failed.');
     }
-
-    setError('');
-    setChatOpen(true);
   };
 
-  const handleVerifyLedger = () => {
-    if (!canUseFeature('blockchain')) {
-      setTab('blockchain');
-      setError('Verify ledger is unlocked on the Small Business tier and above.');
-      return;
-    }
-
-    setError('');
-    setTab('blockchain');
-  };
-
+  // ── Upload & Analyze ──────────────────────────────────────────────
   const uploadAndAnalyze = async () => {
-    if (!file) {
-      setError('Choose a CSV file first.');
-      return;
-    }
-
-    setError('');
-    setLoading(true);
-    setStatus('uploading');
+    if (!file) { setError('Select a CSV file first.'); return; }
+    setError(''); setLoading(true); setStatus('uploading');
+    setProgress([
+      { key: 'upload',     label: 'CSV uploaded',           status: 'running' },
+      { key: 'parse',      label: 'CSV parsed',              status: 'idle' },
+      { key: 'python',     label: 'Python analysis',         status: 'idle' },
+      { key: 'blockchain', label: 'Blockchain verification',  status: 'idle' },
+      { key: 'dashboard',  label: 'Dashboard ready',         status: 'idle' },
+    ]);
 
     try {
-      const formData = new FormData();
-      formData.append('file', file);
-
-      const analysisResponse = await axios.post(`${API_BASE}/api/advanced/ml/upload-analyze`, formData);
-
-      console.log('[Dashboard] API Response:', analysisResponse.data);
-
-      let responseData = {};
-      
-      if (analysisResponse.data.data) {
-        responseData = analysisResponse.data.data;
-      } else if (analysisResponse.data.pieData) {
-        responseData = analysisResponse.data;
-      } else {
-        console.error('[Dashboard] Unexpected response format:', analysisResponse.data);
-        setError('Invalid response format from server');
-        setStatus('error');
-        setPipelineProgress([
-          { key: 'upload', label: 'CSV uploaded', status: 'done' },
-          { key: 'parse', label: 'CSV parsed', status: 'done' },
-          { key: 'python', label: 'Python analysis', status: 'error' },
-          { key: 'blockchain', label: 'Blockchain verification', status: 'idle' },
-          { key: 'dashboard', label: 'Dashboard ready', status: 'idle' }
-        ]);
-        setLoading(false);
-        return;
-      }
-      
-      if (!responseData.pieData || !Array.isArray(responseData.pieData)) {
-        console.error('[Dashboard] Missing pieData in response:', responseData);
-        setError('Analysis response missing sentiment data');
-        setStatus('error');
-        setPipelineProgress([
-          { key: 'upload', label: 'CSV uploaded', status: 'done' },
-          { key: 'parse', label: 'CSV parsed', status: 'done' },
-          { key: 'python', label: 'Python analysis', status: 'error' },
-          { key: 'blockchain', label: 'Blockchain verification', status: 'idle' },
-          { key: 'dashboard', label: 'Dashboard ready', status: 'idle' }
-        ]);
-        setLoading(false);
-        return;
-      }
+      const form = new FormData();
+      form.append('file', file);
+      const res  = await axios.post(`${API_BASE}/api/advanced/ml/upload-analyze`, form);
+      const d    = res.data.data || res.data;
+      if (res.data.sessionId) setSessionId(res.data.sessionId);
+      if (!d?.pieData) throw new Error('No pieData in response');
 
       setAnalysis({
-        pieData: responseData.pieData || [],
-        metrics: responseData.metrics || { total_reviews: 0, avg_rating: 0, detected_col: 'rating' },
-        ratingDistribution: responseData.ratingDistribution || [],
-        complaintCategories: responseData.complaintCategories || [],
-        timeSeriesData: responseData.timeSeriesData || [],
-        blockchainVerification: responseData.blockchainVerification || null,
-        analysisMetadata: responseData.analysisMetadata || {
-          totalReviewsAnalyzed: responseData.metrics?.total_reviews || 0,
-          pythonServiceStatus: 'success',
-          analysisTime: new Date().toISOString()
-        }
+        pieData:             d.pieData             || [],
+        metrics:             d.metrics             || {},
+        complaintCategories: d.complaintCategories || [],
+        ratingDistribution:  d.ratingDistribution  || [],
+        analysisMetadata:    d.analysisMetadata    || { totalReviewsAnalyzed: d.metrics?.total_reviews || 0, analysisTime: new Date().toISOString(), pythonServiceStatus: 'Connected' },
+        blockchainVerification: res.data.blockchainVerification || null,
       });
 
-      setPipelineProgress([
-        { key: 'upload', label: 'CSV uploaded', status: 'done' },
-        { key: 'parse', label: 'CSV parsed', status: 'done' },
-        { key: 'python', label: 'Python analysis', status: 'done' },
-        { key: 'blockchain', label: 'Blockchain verification', status: 'pending' },
-        { key: 'dashboard', label: 'Dashboard ready', status: 'done' }
+      setProgress([
+        { key: 'upload',     label: 'CSV uploaded',           status: 'done'    },
+        { key: 'parse',      label: 'CSV parsed',              status: 'done'    },
+        { key: 'python',     label: 'Python analysis',         status: 'done'    },
+        { key: 'blockchain', label: 'Blockchain verification',  status: 'pending' },
+        { key: 'dashboard',  label: 'Dashboard ready',         status: 'done'    },
       ]);
-      
+      setStatus('ready');
       setTab('overview');
-      setStatus('ready');
-      setReportStatus(`Analysis complete! ${responseData.metrics?.total_reviews || 0} reviews analyzed.`);
-      
-    } catch (analysisError) {
-      console.error('[Dashboard] Upload error:', analysisError);
-      const errorMessage = 
-        analysisError.response?.data?.error ||
-        analysisError.response?.data?.message ||
-        analysisError.message ||
-        'Analysis failed. Make sure Python service is running on port 8000.';
-      
-      setError(errorMessage);
-      setStatus('error');
-      setPipelineProgress([
-        { key: 'upload', label: 'CSV uploaded', status: 'done' },
-        { key: 'parse', label: 'CSV parsed', status: 'done' },
-        { key: 'python', label: 'Python analysis', status: 'error' },
-        { key: 'blockchain', label: 'Blockchain verification', status: 'idle' },
-        { key: 'dashboard', label: 'Dashboard ready', status: 'idle' }
+      setRptStatus(`Analysis complete! ${d.metrics?.total_reviews || 0} reviews analyzed.`);
+    } catch (err) {
+      const msg = err.response?.data?.error || err.message || 'Analysis failed.';
+      setError(msg); setStatus('error');
+      setProgress([
+        { key: 'upload',     label: 'CSV uploaded',           status: 'done'  },
+        { key: 'parse',      label: 'CSV parsed',              status: 'done'  },
+        { key: 'python',     label: 'Python analysis',         status: 'error' },
+        { key: 'blockchain', label: 'Blockchain verification',  status: 'idle'  },
+        { key: 'dashboard',  label: 'Dashboard ready',         status: 'idle'  },
       ]);
-    } finally {
-      setLoading(false);
-    }
+    } finally { setLoading(false); }
   };
 
+  // ── Generate PDF ─────────────────────────────────────────────────
   const generateReport = async () => {
-    if (!hasAnalysis) {
-      setError('Run an analysis before generating a report.');
-      return;
-    }
-
-    if (!canUseFeature('report')) {
-      setError('PDF export is available on the Small Business and Enterprise tiers.');
-      setTab('reports');
-      return;
-    }
-
+    if (!hasAnalysis)  { setError('Run analysis first.'); return; }
+    if (!can('report')){ setError('PDF export requires Small Business or Enterprise plan.'); return; }
     try {
-      setReportBusy(true);
-      setReportStatus('Generating PDF report...');
-      
-      const reportData = {
-        pieData: analysis.pieData || [],
-        metrics: analysis.metrics || {},
-        ratingDistribution: analysis.ratingDistribution || [],
-        complaintCategories: analysis.complaintCategories || []
-      };
-      
-      const response = await axios.post(`${API_BASE}/api/advanced/reports/generate`, {
-        analysisData: reportData
+      setRptBusy(true); setRptStatus('Generating PDF...');
+      const res = await axios.post(`${API_BASE}/api/advanced/reports/generate`, {
+        sessionId,
+        analysisData: {
+          pieData: analysis.pieData, metrics: analysis.metrics,
+          complaintCategories: analysis.complaintCategories, ratingDistribution: analysis.ratingDistribution,
+        },
       });
-
-      const report = response.data.report;
-      const downloadUrl = report?.reportId
-        ? `${API_BASE}/api/advanced/reports/download/${report.reportId}`
-        : `${API_BASE}${report?.url || ''}`;
-
-      const link = document.createElement('a');
-      link.href = downloadUrl;
-      link.download = report?.filename || 'reviewmind-report.pdf';
-      document.body.appendChild(link);
-      link.click();
-      setTimeout(() => link.remove(), 100);
-      setStatus('ready');
-      setReportStatus(`Report ready: ${report?.filename || 'reviewmind-report.pdf'}`);
-    } catch (reportError) {
-      console.error(reportError);
-      setError(reportError.response?.data?.error || 'Report generation failed.');
-      setStatus('error');
-      setReportStatus('Report generation failed.');
-    } finally {
-      setReportBusy(false);
-    }
+      const rpt = res.data.report;
+      const url = rpt?.reportId
+        ? `${API_BASE}/api/advanced/reports/download/${rpt.reportId}`
+        : `${API_BASE}${rpt?.url || ''}`;
+      const a = document.createElement('a');
+      a.href = url; a.download = rpt?.filename || 'reviewmind-report.pdf';
+      document.body.appendChild(a); a.click(); setTimeout(() => a.remove(), 100);
+      setRptStatus(`Report ready: ${rpt?.filename || 'reviewmind-report.pdf'}`);
+    } catch (err) {
+      setError(err.response?.data?.error || 'Report generation failed.');
+      setRptStatus('Report generation failed.');
+    } finally { setRptBusy(false); }
   };
 
-  if (!session?.token) {
+  // ─── AUTH SCREEN (Login/Register/MFA) ────────────────────────────
+  if (!session?.token && authView !== 'mfa-setup') {
     return (
-      <AuthScreen
-        authView={authView}
-        setAuthView={setAuthView}
-        authForm={authForm}
-        setAuthForm={setAuthForm}
-        authLoading={authLoading}
-        authError={authError}
-        authNotice={authNotice}
-        authHint={authHint}
-        signupQr={signupQr}
-        resetLink={resetLink}
-        resetToken={resetToken}
-        pendingEmail={pendingEmail}
-        signupPlan={signupPlan}
-        setSignupPlan={setSignupPlan}
-        onSubmit={handleAuthSubmit}
-      />
+      <div className="auth-shell">
+        <div className="ambient ambient--one" /><div className="ambient ambient--two" />
+        <div className="auth-grid">
+          <section className="auth-hero">
+            <Badge tone="brand">ReviewMind Secure Access</Badge>
+            <h1>Sign in to the review intelligence workspace.</h1>
+            <p>ReviewMind is built as a secure product flow: authenticate first, then upload data, verify the ledger, chat with the assistant, and export a board-ready report.</p>
+            <div className="purpose-strip">
+              <div className="purpose-card"><strong>1. Ingest</strong><span>Upload CSV review data and run analysis.</span></div>
+              <div className="purpose-card"><strong>2. Verify</strong><span>Confirm blockchain integrity before sharing results.</span></div>
+              <div className="purpose-card"><strong>3. Export</strong><span>Generate PDF reports and use the chat assistant.</span></div>
+            </div>
+          </section>
+
+          <section className="auth-card">
+            {authView !== 'mfa-setup' && <AuthTabs view={authView} onChange={setAuthView} />}
+
+            {authNotice && <div className="notice notice--info"><CheckCircle2 size={16} /><span>{authNotice}</span></div>}
+            {authError  && <div className="notice notice--error"><AlertCircle size={16} /><span>{authError}</span></div>}
+
+            {/* MFA Setup QR Code */}
+            {authView === 'mfa-setup' && mfaQrCode && (
+              <div className="qr-card">
+                <div className="qr-card__header"><QrCode size={16} /><strong>Scan QR Code with Google Authenticator</strong></div>
+                <img src={mfaQrCode} alt="MFA QR" style={{ width: 200, height: 200, margin: '10px auto' }} />
+                <p>Secret: <strong>{mfaSecret}</strong></p>
+                <p>Enter the 6-digit code from your authenticator app below:</p>
+                <input type="text" maxLength={6} placeholder="123456"
+                  value={authForm.mfaCode} onChange={e => setAuthForm(p => ({ ...p, mfaCode: e.target.value }))} />
+                <button className="primary-button" style={{ marginTop: 10 }} onClick={handleAuth}>Enable MFA</button>
+              </div>
+            )}
+
+            <form className="auth-form" onSubmit={handleAuth}>
+              {authView === 'mfa-verify' ? (
+                <>
+                  <div className="field field--readonly"><span>Account</span><strong>{pendingEmail}</strong></div>
+                  <label className="field"><span>MFA code</span>
+                    <input type="text" inputMode="numeric" maxLength={6} placeholder="123456" required
+                      value={authForm.mfaCode} onChange={e => setAuthForm(p => ({ ...p, mfaCode: e.target.value }))} />
+                  </label>
+                </>
+              ) : authView === 'reset' ? (
+                <>
+                  <label className="field"><span>Reset token</span>
+                    <input type="text" placeholder="Paste token" required
+                      value={authForm.token} onChange={e => setAuthForm(p => ({ ...p, token: e.target.value }))} />
+                  </label>
+                  <label className="field"><span>New password</span>
+                    <input type="password" placeholder="New password" required
+                      value={authForm.newPassword} onChange={e => setAuthForm(p => ({ ...p, newPassword: e.target.value }))} />
+                  </label>
+                  <label className="field"><span>Confirm password</span>
+                    <input type="password" placeholder="Repeat password" required
+                      value={authForm.confirmPassword} onChange={e => setAuthForm(p => ({ ...p, confirmPassword: e.target.value }))} />
+                  </label>
+                </>
+              ) : authView === 'forgot' ? (
+                <label className="field"><span>Email</span>
+                  <input type="email" placeholder="you@company.com" required
+                    value={authForm.email} onChange={e => setAuthForm(p => ({ ...p, email: e.target.value }))} />
+                </label>
+              ) : authView === 'signup' ? (
+                <>
+                  <label className="field"><span>Email</span>
+                    <input type="email" autoComplete="email" placeholder="you@company.com" required
+                      value={authForm.email} onChange={e => setAuthForm(p => ({ ...p, email: e.target.value }))} />
+                  </label>
+                  <label className="field"><span>Password</span>
+                    <input type="password" autoComplete="new-password" placeholder="Enter your password" required
+                      value={authForm.password} onChange={e => setAuthForm(p => ({ ...p, password: e.target.value }))} />
+                  </label>
+                  <div className="field"><span>Plan</span>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                      {PLAN_ORDER.map(pk => (
+                        <button key={pk} type="button" onClick={() => setSignupPlan(pk)}
+                          style={{ flex: 1, padding: '10px 8px', borderRadius: 8, cursor: 'pointer',
+                            border: signupPlan === pk ? `2px solid ${PLANS[pk].accent}` : '1px solid var(--border)',
+                            fontWeight: signupPlan === pk ? 700 : 500, fontSize: 13 }}>
+                          {PLANS[pk].name}<br /><small>{PLANS[pk].price}</small>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              ) : authView === 'login' ? (
+                <>
+                  <label className="field"><span>Email</span>
+                    <input type="email" autoComplete="email" placeholder="you@company.com" required
+                      value={authForm.email} onChange={e => setAuthForm(p => ({ ...p, email: e.target.value }))} />
+                  </label>
+                  <label className="field"><span>Password</span>
+                    <input type="password" autoComplete="current-password" placeholder="Enter your password" required
+                      value={authForm.password} onChange={e => setAuthForm(p => ({ ...p, password: e.target.value }))} />
+                  </label>
+                </>
+              ) : null}
+
+              {authView !== 'mfa-setup' && authView !== 'mfa-verify' && (
+                <button className="primary-button auth-submit" type="submit" disabled={authLoading}>
+                  {authLoading ? <RefreshCcw size={16} className="spin" /> : <LogIn size={16} />}
+                  {authLoading ? 'Working...' : authView === 'signup' ? 'Create account' : authView === 'forgot' ? 'Send reset link' : authView === 'reset' ? 'Reset password' : 'Sign in'}
+                </button>
+              )}
+            </form>
+
+            {authView !== 'mfa-setup' && authView !== 'mfa-verify' && (
+              <div className="auth-footer-actions">
+                {authView === 'login'  && <button type="button" className="ghost-button" onClick={() => setAuthView('forgot')}>Forgot password?</button>}
+                {authView === 'login'  && <button type="button" className="ghost-button" onClick={() => setAuthView('signup')}>Create account</button>}
+                {authView === 'signup' && <button type="button" className="ghost-button" onClick={() => setAuthView('login')}>Already have an account?</button>}
+                {(authView === 'forgot' || authView === 'reset') && <button type="button" className="ghost-button" onClick={() => setAuthView('login')}>Back to sign in</button>}
+              </div>
+            )}
+          </section>
+        </div>
+      </div>
     );
   }
 
+  // ── Dashboard (Logged In) ─────────────────────────────────────────
   const navTabs = [
-    { key: 'overview', label: 'Overview', icon: LayoutDashboard },
-    { key: 'reports', label: 'Reports', icon: FileText },
-    { key: 'blockchain', label: 'Blockchain', icon: ShieldCheck },
-    { key: 'chat', label: 'Chat', icon: MessageCircle }
+    { key: 'overview',    label: 'Overview',    icon: LayoutDashboard },
+    { key: 'reports',     label: 'Reports',     icon: FileText        },
+    { key: 'blockchain',  label: 'Blockchain',  icon: ShieldCheck     },
+    { key: 'chat',        label: 'Chat',        icon: MessageCircle   },
   ];
-
-  if (debugMode && canUseFeature('debug')) {
-    navTabs.push({ key: 'debug', label: 'Debug', icon: Fingerprint });
-  }
 
   return (
     <div className="app-shell">
-      <div className="ambient ambient--one" />
-      <div className="ambient ambient--two" />
+      <div className="ambient ambient--one" /><div className="ambient ambient--two" />
 
       <header className="hero hero--dashboard">
         <div className="hero__copy">
           <Badge tone="brand">Authenticated workspace</Badge>
           <h1>ReviewMind production dashboard.</h1>
-          <p>
-            Purpose: upload review data, analyze sentiment, verify the chain, chat with the assistant, and export
-            clean reports. The raw payload view stays hidden unless developer mode is enabled.
-          </p>
+          <p>Upload review data, analyze sentiment, verify the chain, chat with the assistant, and export clean reports.</p>
         </div>
-
         <div className="hero__actions hero__actions--stacked">
-          <div className="session-chip">
-            <strong>{session.email || 'Authenticated user'}</strong>
-            <span>Signed in</span>
-          </div>
-          <div className="subscription-chip">
-            <strong>{activePlan.name}</strong>
-            <span>{activePlan.price} plan</span>
-          </div>
-          <button className="secondary-button" onClick={handleOpenChat}>
-            <MessageCircle size={16} />
-            Open Chat
-          </button>
+          <div className="session-chip"><strong>{session.email}</strong><span>Signed in</span></div>
+          <div className="subscription-chip"><strong>{activePlan.name}</strong><span>{activePlan.price} plan</span></div>
+          <button className="secondary-button" onClick={() => can('chat') ? setChatOpen(true) : setError('Chat requires Small Business or Enterprise plan.')}><MessageCircle size={16} />Open Chat</button>
           <button className="primary-button" onClick={generateReport} disabled={reportBusy}>
             {reportBusy ? <RefreshCcw size={16} className="spin" /> : <Download size={16} />}
             {reportBusy ? 'Generating...' : 'PDF Report'}
           </button>
-          <button 
-            className="ghost-button" 
-            onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}
-            title={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'}
-          >
+          <button className="ghost-button" onClick={() => setTheme(t => t === 'light' ? 'dark' : 'light')}>
             {theme === 'light' ? <Moon size={16} /> : <Sun size={16} />}
           </button>
-          <button className="ghost-button" onClick={handleLogout}>
-            <LogOut size={16} />
-            Sign out
-          </button>
+          <button className="ghost-button" onClick={handleLogout}><LogOut size={16} />Sign out</button>
         </div>
       </header>
 
       <main className="layout">
         <section className="upload-card">
           <div className="upload-card__header">
-            <div>
-              <h2>Upload data</h2>
-              <p>CSV with a rating-like column such as rating, score, stars, or points.</p>
-            </div>
+            <div><h2>Upload data</h2><p>CSV with a rating-like column such as rating, score, stars, or points.</p></div>
             <Badge tone={status === 'ready' ? 'success' : status === 'error' ? 'danger' : 'neutral'}>
               {status === 'ready' ? 'Ready' : status === 'error' ? 'Needs attention' : 'Idle'}
             </Badge>
           </div>
-
-          <label className="dropzone" htmlFor="reviewmind-file">
-            <input
-              id="reviewmind-file"
-              type="file"
-              accept=".csv"
-              onChange={(event) => setFile(event.target.files?.[0] || null)}
-            />
+          <label className="dropzone" htmlFor="rm-file">
+            <input id="rm-file" type="file" accept=".csv" onChange={e => setFile(e.target.files?.[0] || null)} />
             <Upload size={30} />
             <strong>{file ? file.name : 'Drop your CSV here or browse'}</strong>
             <span>Run analysis, blockchain verification, and report generation from one flow.</span>
           </label>
-
-          {error ? (
-            <div className="error-box">
-              <AlertCircle size={16} />
-              <span>{error}</span>
-            </div>
-          ) : null}
-
+          {error && <div className="error-box"><AlertCircle size={16} /><span>{error}</span></div>}
           <div className="upload-card__actions">
             <button className="primary-button" onClick={uploadAndAnalyze} disabled={loading}>
               {loading ? <RefreshCcw size={16} className="spin" /> : <Zap size={16} />}
               {loading ? 'Analyzing...' : 'Analyze reviews'}
             </button>
-            <button className="ghost-button" onClick={handleVerifyLedger}>
-              <Fingerprint size={16} />
-              Verify ledger
+            <button className="ghost-button" onClick={() => can('blockchain') ? setTab('blockchain') : setError('Blockchain requires Small Business or Enterprise plan.')}>
+              <Fingerprint size={16} />Verify ledger
             </button>
           </div>
         </section>
 
         <section className="workspace">
           <div className="workspace__purpose">
-            <div>
-              <h2>Why this page exists</h2>
-              <p>
-                This workspace turns raw review data into sentiment analysis, trust verification, report exports,
-                and assistant-driven follow-up without exposing debug payloads to normal users.
-              </p>
+            <div><h2>Why this page exists</h2>
+              <p>This workspace turns raw review data into sentiment analysis, trust verification, report exports, and assistant-driven follow-up.</p>
             </div>
             <div className="workspace__meta">
               <Badge tone={hasAnalysis ? 'success' : 'neutral'}>{hasAnalysis ? 'Analysis loaded' : 'Awaiting data'}</Badge>
@@ -1384,358 +713,174 @@ function App() {
             </div>
           </div>
 
-          <Panel
-            title="Subscription"
-            subtitle="Your current plan and available upgrades."
-            action={<Badge tone="brand">Current: {activePlan.name}</Badge>}
-          >
+          <Panel title="Subscription" subtitle="Your current plan and available upgrades." action={<Badge tone="brand">Current: {activePlan.name}</Badge>}>
             <div className="metric-list metric-list--loose">
-              <div className="metric-row">
-                <span>Plan</span>
-                <strong>{activePlan.name} {activePlan.price}</strong>
-              </div>
-              <div className="metric-row">
-                <span>Features</span>
-                <strong>{Object.values(activePlan.features).filter(Boolean).length} of 6 unlocked</strong>
-              </div>
+              <div className="metric-row"><span>Plan</span><strong>{activePlan.name} {activePlan.price}</strong></div>
+              <div className="metric-row"><span>Features</span><strong>{Object.values(activePlan.features).filter(Boolean).length} of 6 unlocked</strong></div>
             </div>
-
-            {subscriptionPlan !== 'enterprise' ? (
-              <div style={{ marginTop: '16px', padding: '16px', background: 'var(--surface)', borderRadius: '12px', border: `1px solid var(--border)` }}>
-                <div style={{ marginBottom: '12px' }}>
-                  <strong>Next tier: {SUBSCRIPTION_PLANS[nextPlanKey].name}</strong>
-                  <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                    Unlock PDF reports, chat assistant, and blockchain verification.
-                  </p>
-                </div>
-                <button className="primary-button" onClick={() => handlePlanChange(nextPlanKey)}>
-                  Upgrade to {SUBSCRIPTION_PLANS[nextPlanKey].name}
-                </button>
+            {plan !== 'enterprise' ? (
+              <div style={{ marginTop: 16, padding: 16, background: 'var(--surface)', borderRadius: 12, border: '1px solid var(--border)' }}>
+                <strong>Next tier: {PLANS[nextPlanKey].name}</strong>
+                <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 4 }}>Unlock PDF reports, chat assistant, and blockchain verification.</p>
+                <button className="primary-button" style={{ marginTop: 12 }} onClick={() => handleUpgrade(nextPlanKey)}>Upgrade to {PLANS[nextPlanKey].name}</button>
               </div>
             ) : (
-              <div style={{ marginTop: '16px', padding: '16px', background: 'var(--surface)', borderRadius: '12px', border: `1px solid var(--border)` }}>
+              <div style={{ marginTop: 16, padding: 16, background: 'var(--surface)', borderRadius: 12, border: '1px solid var(--border)' }}>
                 <strong>You have the Enterprise tier!</strong>
-                <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: '4px' }}>
-                  All features are unlocked. Contact support for custom requirements.
-                </p>
+                <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 4 }}>All features are unlocked.</p>
               </div>
             )}
           </Panel>
 
           <Panel title="Backend progress" subtitle="What the server has already completed for this run.">
             <div className="pipeline-list">
-              {pipelineProgress.map((step) => (
-                <div key={step.key} className={`pipeline-step pipeline-step--${step.status}`}>
+              {progress.map(s => (
+                <div key={s.key} className={`pipeline-step pipeline-step--${s.status}`}>
                   <span className="pipeline-step__dot" />
-                  <div>
-                    <strong>{step.label}</strong>
-                    <p>
-                      {step.status === 'done'
-                        ? 'Completed'
-                        : step.status === 'error'
-                          ? 'Failed'
-                          : step.status === 'running'
-                            ? 'In progress'
-                            : 'Waiting'}
-                    </p>
+                  <div><strong>{s.label}</strong>
+                    <p>{s.status === 'done' ? 'Completed' : s.status === 'error' ? 'Failed' : s.status === 'running' ? 'In progress' : 'Waiting'}</p>
                   </div>
                 </div>
               ))}
             </div>
-
-            {analysis?.analysisMetadata ? (
-              <div className="metric-list metric-list--loose" style={{ marginTop: '16px' }}>
-                <div className="metric-row">
-                  <span>Total reviews analyzed</span>
-                  <strong>{analysis.analysisMetadata.totalReviewsAnalyzed || totalReviews}</strong>
-                </div>
-                <div className="metric-row">
-                  <span>Python service</span>
-                  <strong>{analysis.analysisMetadata.pythonServiceStatus || 'Unknown'}</strong>
-                </div>
-                <div className="metric-row">
-                  <span>Blockchain status</span>
-                  <strong>{analysis.analysisMetadata.blockchainStatus || 'Unknown'}</strong>
-                </div>
-                <div className="metric-row">
-                  <span>Analysis time</span>
-                  <strong>{analysis.analysisMetadata.analysisTime || 'Unknown'}</strong>
-                </div>
+            {analysis.analysisMetadata && (
+              <div className="metric-list metric-list--loose" style={{ marginTop: 16 }}>
+                <div className="metric-row"><span>Total reviews analyzed</span><strong>{analysis.analysisMetadata.totalReviewsAnalyzed || total}</strong></div>
+                <div className="metric-row"><span>Python service</span><strong>{analysis.analysisMetadata.pythonServiceStatus || 'Unknown'}</strong></div>
+                <div className="metric-row"><span>Blockchain status</span><strong>{analysis.blockchainVerification?.success ? 'Verified' : 'Unknown'}</strong></div>
+                <div className="metric-row"><span>Analysis time</span><strong>{analysis.analysisMetadata.analysisTime || 'Unknown'}</strong></div>
               </div>
-            ) : null}
+            )}
           </Panel>
 
           <div className="tabs">
-            {navTabs.map((item) => (
-              <button
-                key={item.key}
-                className={tab === item.key ? 'tab tab--active' : 'tab'}
-                onClick={() => setTab(item.key)}
-              >
-                <item.icon size={15} />
-                {item.label}
+            {navTabs.map(t => (
+              <button key={t.key} className={tab === t.key ? 'tab tab--active' : 'tab'} onClick={() => setTab(t.key)}>
+                <t.icon size={15} />{t.label}
               </button>
             ))}
           </div>
 
-          {tab === 'overview' ? (
+          {tab === 'overview' && (
             <div className="stack stack--xl">
               <div className="grid grid--4">
-                <StatCard icon={FileText} label="Total reviews" value={formatNumber(totalReviews)} accent="#2563eb" caption="From uploaded data" />
-                <StatCard icon={CheckCircle2} label="Positive" value={formatNumber(positiveReviews)} accent="#059669" caption="Good experiences" />
-                <StatCard icon={AlertCircle} label="Negative" value={formatNumber(negativeReviews)} accent="#dc2626" caption="Needs action" />
-                <StatCard icon={ShieldCheck} label="Neutral" value={formatNumber(neutralReviews)} accent="#d97706" caption="Potential follow-up" />
+                <StatCard icon={FileText}    label="Total reviews" value={fmt(total)}    accent="#2563eb" caption="From uploaded data" />
+                <StatCard icon={CheckCircle2} label="Positive"     value={fmt(positive)} accent="#059669" caption="Good experiences" />
+                <StatCard icon={AlertCircle}  label="Negative"     value={fmt(negative)} accent="#dc2626" caption="Needs action" />
+                <StatCard icon={ShieldCheck}  label="Neutral"      value={fmt(neutral)}  accent="#d97706" caption="Potential follow-up" />
               </div>
 
               <div className="grid grid--2">
                 <Panel title="Sentiment split" subtitle="Auto-clustered from the uploaded dataset.">
                   {hasAnalysis ? (
-                    <ResponsiveContainer width="100%" height={320}>
-                      <PieChart>
-                        <Pie data={analysis?.pieData || []} dataKey="value" nameKey="name" outerRadius={110} innerRadius={60} paddingAngle={4}>
-                          {(analysis?.pieData || []).map((entry) => (
-                            <Cell key={entry.name} fill={getSentimentColor(entry.name)} />
-                          ))}
-                        </Pie>
-                        <Tooltip />
-                        <Legend />
-                      </PieChart>
-                    </ResponsiveContainer>
-                  ) : (
-                    <SentimentEmptyState title="No sentiment data yet" description="Upload a CSV to generate the sentiment split and trend charts." />
-                  )}
-                  {hasAnalysis ? (
-                    <div style={{ marginTop: '18px' }}>
-                      <ResponsiveContainer width="100%" height={220}>
-                        <BarChart data={sentimentChartData} layout="vertical" margin={{ left: 16, right: 16, top: 8, bottom: 8 }}>
-                          <CartesianGrid strokeDasharray="3 3" stroke="rgba(148, 163, 184, 0.2)" />
+                    <>
+                      <ResponsiveContainer width="100%" height={280}>
+                        <PieChart>
+                          <Pie data={analysis.pieData} dataKey="value" nameKey="name" outerRadius={100} innerRadius={55} paddingAngle={4}>
+                            {analysis.pieData.map(e => <Cell key={e.name} fill={SENTIMENT_COLORS[e.name] || '#2563eb'} />)}
+                          </Pie>
+                          <Tooltip /><Legend />
+                        </PieChart>
+                      </ResponsiveContainer>
+                      <ResponsiveContainer width="100%" height={200}>
+                        <BarChart data={chartData} layout="vertical" margin={{ left: 16, right: 16, top: 8, bottom: 8 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,.2)" />
                           <XAxis type="number" tick={{ fill: '#64748b', fontSize: 12 }} allowDecimals={false} />
                           <YAxis type="category" dataKey="name" tick={{ fill: '#64748b', fontSize: 12 }} width={80} />
-                          <Tooltip
-                            contentStyle={{
-                              background: 'var(--surface-strong)',
-                              border: '1px solid var(--border)',
-                              borderRadius: '12px',
-                              color: 'var(--primary-strong)'
-                            }}
-                          />
+                          <Tooltip contentStyle={{ background: 'var(--surface-strong)', border: '1px solid var(--border)', borderRadius: 12 }} />
                           <Bar dataKey="value" radius={[0, 12, 12, 0]}>
-                            {sentimentChartData.map((entry) => (
-                              <Cell key={entry.name} fill={entry.fill} />
-                            ))}
+                            {chartData.map(e => <Cell key={e.name} fill={e.fill} />)}
                           </Bar>
                         </BarChart>
                       </ResponsiveContainer>
-                    </div>
-                  ) : null}
+                    </>
+                  ) : <Empty title="No sentiment data yet" description="Upload a CSV to generate the sentiment split and trend charts." />}
                 </Panel>
 
-                <Panel
-                  title="Live metrics"
-                  subtitle="Rendered directly from the Python analysis response."
-                  action={
-                    <button className="ghost-button" onClick={generateReport} disabled={!hasAnalysis || reportBusy || !canUseFeature('report')}>
-                      <Download size={16} />
-                      Download
-                    </button>
-                  }
-                >
+                <Panel title="Live metrics" subtitle="Rendered directly from the Python analysis response."
+                  action={<button className="ghost-button" onClick={generateReport} disabled={!hasAnalysis || reportBusy || !can('report')}><Download size={16} />Download</button>}>
                   {hasAnalysis ? (
                     <div className="metric-list">
-                      <div className="metric-row">
-                        <span>Detected column</span>
-                        <strong>{analysis?.metrics?.detected_col || 'rating'}</strong>
-                      </div>
-                      <div className="metric-row">
-                        <span>Average rating</span>
-                        <strong>{Number(analysis?.metrics?.avg_rating || 0).toFixed(2)} / 5</strong>
-                      </div>
-                      <div className="metric-row">
-                        <span>Risk Level</span>
-                        <strong>{analysis?.metrics?.risk_level || 'Unknown'}</strong>
-                      </div>
-                      <div className="metric-row">
-                        <span>Blockchain</span>
-                        <strong>{analysis?.blockchainVerification?.success ? 'Verified' : 'Pending'}</strong>
-                      </div>
+                      <div className="metric-row"><span>Detected column</span><strong>{analysis.metrics?.detected_col || 'N/A'}</strong></div>
+                      <div className="metric-row"><span>Average rating</span><strong>{Number(analysis.metrics?.avg_rating || 0).toFixed(2)} / 5</strong></div>
+                      <div className="metric-row"><span>Sentiment score</span><strong>{analysis.metrics?.sentiment_score ?? 'N/A'}/100</strong></div>
+                      <div className="metric-row"><span>Risk Level</span><strong>{analysis.metrics?.risk_level || 'Unknown'}</strong></div>
+                      <div className="metric-row"><span>Blockchain</span><strong>{analysis.blockchainVerification?.success ? 'Verified' : 'Pending'}</strong></div>
                     </div>
-                  ) : (
-                    <SentimentEmptyState title="Metrics will appear here" description="Run an analysis to populate the metrics panel." />
-                  )}
+                  ) : <Empty title="Metrics will appear here" description="Run an analysis to populate the metrics panel." />}
                 </Panel>
               </div>
 
-              <Panel
-                title="Complaint Analysis"
-                subtitle="Top complaint categories identified from negative reviews."
-              >
-                {analysis?.complaintCategories && analysis.complaintCategories.length > 0 ? (
-                  <div className="stack" style={{ gap: '12px' }}>
-                    {analysis.complaintCategories.slice(0, 5).map((complaint, idx) => (
-                      <div key={idx} className="insight-box">
-                        <div className="insight-box__icon">
-                          <AlertCircle size={18} />
-                        </div>
-                        <div>
-                          <strong>{complaint.category}</strong>
-                          <p>{complaint.count} reviews ({complaint.percentage}% of negatives)</p>
-                        </div>
+              <Panel title="Complaint Analysis" subtitle="Top complaint categories identified from negative reviews.">
+                {analysis.complaintCategories?.length > 0 ? (
+                  <div className="stack" style={{ gap: 12 }}>
+                    {analysis.complaintCategories.slice(0, 5).map((c, i) => (
+                      <div key={i} className="insight-box">
+                        <div className="insight-box__icon"><AlertCircle size={18} /></div>
+                        <div><strong>{c.category}</strong><p>{c.count} reviews ({c.percentage}% of negatives)</p></div>
                       </div>
                     ))}
                   </div>
-                ) : (
-                  <SentimentEmptyState 
-                    title="No complaint data available" 
-                    description="Upload a CSV with review text to see complaint categorization." 
-                  />
-                )}
+                ) : <Empty title="No complaint data available" description="Upload a CSV with review text to see complaint categorization." />}
               </Panel>
 
               <Panel title="Analysis summary" subtitle="A board-ready narrative generated from the live dataset.">
                 {hasAnalysis ? (
-                  <div className="stack" style={{ gap: '12px' }}>
-                    {generateInsights(analysis)?.map((insight, index) => (
-                      <div key={index} className="insight-box">
-                        <div className="insight-box__icon">
-                          <ArrowRight size={18} />
-                        </div>
-                        <div>
-                          <strong>{insight.title}</strong>
-                          <p>{insight.description}</p>
-                        </div>
+                  <div className="stack" style={{ gap: 12 }}>
+                    {(genInsights(analysis) || [{ title: 'Analysis complete', description: 'Your review data has been analyzed. Use the metrics, sentiment split, and complaint categories above to understand customer feedback trends.' }]).map((ins, i) => (
+                      <div key={i} className="insight-box">
+                        <div className="insight-box__icon"><ArrowRight size={18} /></div>
+                        <div><strong>{ins.title}</strong><p>{ins.description}</p></div>
                       </div>
-                    )) || (
-                      <div className="insight-box">
-                        <div className="insight-box__icon">
-                          <ArrowRight size={18} />
-                        </div>
-                        <div>
-                          <strong>Analysis complete</strong>
-                          <p>
-                            Your review data has been analyzed. Use the metrics, sentiment split, and complaint
-                            categories above to understand customer feedback trends.
-                          </p>
-                        </div>
-                      </div>
-                    )}
+                    ))}
                   </div>
-                ) : (
-                  <SentimentEmptyState title="No analysis summary yet" description="Upload data to generate recommendations and root-cause insights." />
-                )}
+                ) : <Empty title="No analysis summary yet" description="Upload data to generate recommendations and root-cause insights." />}
               </Panel>
             </div>
-          ) : null}
+          )}
 
-          {tab === 'reports' ? (
+          {tab === 'reports' && (
             <div className="stack">
               <div className="grid grid--2">
-                <StatCard
-                  icon={Download}
-                  label="Export status"
-                  value={reportBusy ? 'Working' : 'Ready'}
-                  accent={reportBusy ? '#d97706' : '#059669'}
-                  caption={reportStatus}
-                />
-                <StatCard
-                  icon={FileText}
-                  label="Analysis coverage"
-                  value={formatNumber(analysis?.analysisMetadata?.totalReviewsAnalyzed || totalReviews)}
-                  accent="#2563eb"
-                  caption="Rows reflected in the report"
-                />
+                <StatCard icon={Download} label="Export status" value={reportBusy ? 'Working' : 'Ready'} accent={reportBusy ? '#d97706' : '#059669'} caption={reportStatus} />
+                <StatCard icon={FileText} label="Analysis coverage" value={fmt(analysis.analysisMetadata?.totalReviewsAnalyzed || total)} accent="#2563eb" caption="Rows reflected in report" />
               </div>
-
               <Panel title="PDF export" subtitle="Generate a clean report with charts, plain headings, and production typography.">
-                {!canUseFeature('report') ? (
-                  <div className="locked-panel">
-                    <strong>PDF export is unlocked on the Small Business tier.</strong>
-                    <p>Switch plans above to enable report generation, chat, and blockchain features.</p>
-                  </div>
-                ) : null}
-
+                {!can('report') && <div className="locked-panel"><strong>PDF export is unlocked on the Small Business tier.</strong></div>}
                 <div className="report-card">
-                  <div>
-                    <strong>{reportBusy ? 'Building report...' : 'Create the latest analysis report'}</strong>
-                    <p>
-                      The PDF includes sentiment visuals, rating distribution, complaint analysis, AI insights, and chain status.
-                    </p>
+                  <div><strong>Create the latest analysis report</strong>
+                    <p>The PDF includes sentiment visuals, complaint analysis, AI insights, and chain status.</p>
                   </div>
-                  <button className="primary-button" onClick={generateReport} disabled={!hasAnalysis || reportBusy || !canUseFeature('report')}>
-                    <Download size={16} />
-                    {reportBusy ? 'Generating...' : 'Generate PDF'}
+                  <button className="primary-button" onClick={generateReport} disabled={!hasAnalysis || reportBusy || !can('report')}>
+                    <Download size={16} />{reportBusy ? 'Generating...' : 'Generate PDF'}
                   </button>
-                </div>
-
-                <div className="metric-list metric-list--loose">
-                  <div className="metric-row">
-                    <span>Analysis time</span>
-                    <strong>{analysis?.analysisMetadata?.analysisTime || 'Not generated yet'}</strong>
-                  </div>
-                  <div className="metric-row">
-                    <span>Python service</span>
-                    <strong>{analysis?.analysisMetadata?.pythonServiceStatus || 'Not checked yet'}</strong>
-                  </div>
-                  <div className="metric-row">
-                    <span>Blockchain status</span>
-                    <strong>{analysis?.analysisMetadata?.blockchainStatus || 'Not checked yet'}</strong>
-                  </div>
                 </div>
               </Panel>
             </div>
-          ) : null}
+          )}
 
-          {tab === 'blockchain' && canUseFeature('blockchain') ? <BlockchainPanel /> : null}
-          {tab === 'blockchain' && !canUseFeature('blockchain') ? (
-            <Panel title="Blockchain verification" subtitle="This feature is unlocked on the Small Business tier and above.">
-              <div className="locked-panel">
-                <strong>Blockchain verification is a paid-tier capability.</strong>
-                <p>Upgrade from Basic to unlock ledger checks, integrity stats, and chain review tools.</p>
-              </div>
+          {tab === 'blockchain' && (can('blockchain') ? <BlockchainPanel /> : (
+            <Panel title="Blockchain verification" subtitle="Unlocked on Small Business tier and above.">
+              <div className="locked-panel"><strong>Upgrade to access blockchain verification.</strong></div>
             </Panel>
-          ) : null}
+          ))}
 
-          {tab === 'chat' ? (
-            <Panel
-              title="Conversation assistant"
-              subtitle="Open the contextual chat drawer to ask about trends, risks, and next actions."
-              action={
-                <button className="primary-button" onClick={() => setChatOpen(true)} disabled={!hasAnalysis || !canUseFeature('chat')}>
-                  <MessageCircle size={16} />
-                  Open Chat
-                </button>
-              }
-            >
-              {!canUseFeature('chat') ? (
-                <div className="locked-panel">
-                  <strong>Chat is available on Small Business and Enterprise tiers.</strong>
-                  <p>Upgrade to enable the assistant and guided follow-up questions.</p>
-                </div>
-              ) : null}
-
+          {tab === 'chat' && (
+            <Panel title="Conversation assistant" subtitle="Ask about trends, risks, and next actions."
+              action={<button className="primary-button" onClick={() => setChatOpen(true)} disabled={!hasAnalysis || !can('chat')}><MessageCircle size={16} />Open Chat</button>}>
+              {!can('chat') && <div className="locked-panel"><strong>Chat is available on Small Business and Enterprise tiers.</strong></div>}
               <div className="insight-box">
-                <div className="insight-box__icon">
-                  <MessageCircle size={18} />
-                </div>
-                <div>
-                  <strong>Ask focused business questions.</strong>
-                  <p>
-                    Try prompts such as: why is sentiment falling, what are the strongest complaint themes, or what should
-                    we prioritize this week?
-                  </p>
+                <div className="insight-box__icon"><MessageCircle size={18} /></div>
+                <div><strong>Ask focused business questions.</strong>
+                  <p>Try: "What are the top complaints?" or "What should we prioritize this week?"</p>
                 </div>
               </div>
             </Panel>
-          ) : null}
-
-          {tab === 'debug' && debugMode && canUseFeature('debug') ? (
-            <Panel title="Raw payload" subtitle="Visible only in developer mode.">
-              <pre className="json-panel">{JSON.stringify(analysis, null, 2)}</pre>
-            </Panel>
-          ) : null}
+          )}
         </section>
       </main>
 
-      {chatOpen ? <ChatDrawer analysis={analysis} onClose={() => setChatOpen(false)} /> : null}
+      {chatOpen && <ChatDrawer analysis={analysis} sessionId={sessionId} onClose={() => setChatOpen(false)} />}
 
       <footer className="footer">
         <span>ReviewMind</span>
@@ -1744,5 +889,3 @@ function App() {
     </div>
   );
 }
-
-export default App;

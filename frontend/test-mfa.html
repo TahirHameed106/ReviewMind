@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ReviewMind MFA Test</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 800px; margin: 50px auto; padding: 20px; }
+        button { padding: 10px 20px; margin: 10px; cursor: pointer; background: #2563eb; color: white; border: none; border-radius: 5px; }
+        button:hover { background: #1d4ed8; }
+        pre { background: #f3f4f6; padding: 15px; border-radius: 5px; overflow-x: auto; }
+        .success { color: #059669; }
+        .error { color: #dc2626; }
+        input { padding: 8px; margin: 5px; width: 200px; }
+        .qr-code { margin: 20px; padding: 20px; background: white; display: inline-block; }
+    </style>
+</head>
+<body>
+    <h1>ReviewMind MFA Test</h1>
+    <p>API Base: <strong>https://reviewmind-production.up.railway.app</strong></p>
+    
+    <hr>
+    
+    <h2>1. Register New User</h2>
+    <button onclick="register()">Register</button>
+    <pre id="registerResult"></pre>
+    
+    <hr>
+    
+    <h2>2. Login (Get Token)</h2>
+    <button onclick="login()">Login</button>
+    <pre id="loginResult"></pre>
+    
+    <hr>
+    
+    <h2>3. Setup MFA (After Login)</h2>
+    <button onclick="setupMFA()">Setup MFA</button>
+    <div id="qrContainer" style="display:none;">
+        <h3>Scan this QR code with Google Authenticator:</h3>
+        <img id="qrImage" class="qr-code">
+        <p>Secret: <strong id="secretKey"></strong></p>
+    </div>
+    <pre id="setupResult"></pre>
+    
+    <hr>
+    
+    <h2>4. Enable MFA (Enter 6-digit code from Authenticator)</h2>
+    <input type="text" id="mfaCode" placeholder="Enter 6-digit code" maxlength="6">
+    <button onclick="enableMFA()">Enable MFA</button>
+    <pre id="enableResult"></pre>
+    
+    <hr>
+    
+    <h2>5. Login Again (Should require MFA)</h2>
+    <button onclick="loginAgain()">Login Again</button>
+    <pre id="loginAgainResult"></pre>
+    
+    <hr>
+    
+    <h2>6. Verify MFA Code</h2>
+    <input type="text" id="verifyCode" placeholder="Enter 6-digit code">
+    <button onclick="verifyMFA()">Verify MFA</button>
+    <pre id="verifyResult"></pre>
+
+    <script>
+    const API = 'https://reviewmind-production.up.railway.app';
+    let authToken = null;
+    let partialToken = null;
+    
+    async function register() {
+        const result = document.getElementById('registerResult');
+        result.innerText = 'Loading...';
+        try {
+            const res = await fetch(`${API}/api/auth/register`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    email: 'mfa.test@reviewmind.com',
+                    password: 'mfa123456',
+                    name: 'MFA Test'
+                })
+            });
+            const data = await res.json();
+            result.innerText = JSON.stringify(data, null, 2);
+            if (data.token) {
+                authToken = data.token;
+                result.classList.add('success');
+            }
+        } catch(err) {
+            result.innerText = 'Error: ' + err.message;
+            result.classList.add('error');
+        }
+    }
+    
+    async function login() {
+        const result = document.getElementById('loginResult');
+        result.innerText = 'Loading...';
+        try {
+            const res = await fetch(`${API}/api/auth/login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    email: 'mfa.test@reviewmind.com',
+                    password: 'mfa123456'
+                })
+            });
+            const data = await res.json();
+            result.innerText = JSON.stringify(data, null, 2);
+            if (data.token) {
+                authToken = data.token;
+                result.classList.add('success');
+            }
+            if (data.partialToken) {
+                partialToken = data.partialToken;
+                result.classList.add('success');
+            }
+        } catch(err) {
+            result.innerText = 'Error: ' + err.message;
+            result.classList.add('error');
+        }
+    }
+    
+    async function setupMFA() {
+        if (!authToken) {
+            document.getElementById('setupResult').innerText = 'Please login first to get token';
+            return;
+        }
+        const result = document.getElementById('setupResult');
+        result.innerText = 'Loading...';
+        try {
+            const res = await fetch(`${API}/api/auth/setup-mfa`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${authToken}`
+                }
+            });
+            const data = await res.json();
+            result.innerText = JSON.stringify(data, null, 2);
+            if (data.qrCode) {
+                document.getElementById('qrContainer').style.display = 'block';
+                document.getElementById('qrImage').src = data.qrCode;
+                document.getElementById('secretKey').innerText = data.secret;
+            }
+        } catch(err) {
+            result.innerText = 'Error: ' + err.message;
+        }
+    }
+    
+    async function enableMFA() {
+        const code = document.getElementById('mfaCode').value;
+        if (!authToken) {
+            document.getElementById('enableResult').innerText = 'Please login first';
+            return;
+        }
+        if (!code) {
+            document.getElementById('enableResult').innerText = 'Please enter MFA code';
+            return;
+        }
+        const result = document.getElementById('enableResult');
+        result.innerText = 'Loading...';
+        try {
+            const res = await fetch(`${API}/api/auth/enable-mfa`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${authToken}`
+                },
+                body: JSON.stringify({ code: code })
+            });
+            const data = await res.json();
+            result.innerText = JSON.stringify(data, null, 2);
+        } catch(err) {
+            result.innerText = 'Error: ' + err.message;
+        }
+    }
+    
+    async function loginAgain() {
+        const result = document.getElementById('loginAgainResult');
+        result.innerText = 'Loading...';
+        try {
+            const res = await fetch(`${API}/api/auth/login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    email: 'mfa.test@reviewmind.com',
+                    password: 'mfa123456'
+                })
+            });
+            const data = await res.json();
+            result.innerText = JSON.stringify(data, null, 2);
+            if (data.partialToken) {
+                partialToken = data.partialToken;
+            }
+        } catch(err) {
+            result.innerText = 'Error: ' + err.message;
+        }
+    }
+    
+    async function verifyMFA() {
+        const code = document.getElementById('verifyCode').value;
+        if (!partialToken) {
+            document.getElementById('verifyResult').innerText = 'No partial token. Login first to get one.';
+            return;
+        }
+        if (!code) {
+            document.getElementById('verifyResult').innerText = 'Please enter MFA code';
+            return;
+        }
+        const result = document.getElementById('verifyResult');
+        result.innerText = 'Loading...';
+        try {
+            const res = await fetch(`${API}/api/auth/verify-mfa`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    partialToken: partialToken,
+                    code: code
+                })
+            });
+            const data = await res.json();
+            result.innerText = JSON.stringify(data, null, 2);
+            if (data.token) {
+                result.classList.add('success');
+                alert('MFA Verified! Full token received.');
+            }
+        } catch(err) {
+            result.innerText = 'Error: ' + err.message;
+        }
+    }
+    </script>
+</body>
+</html>

@@ -1,3 +1,4 @@
+// backend/server.js
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -12,23 +13,18 @@ const PORT = process.env.PORT || 3000;
     fs.mkdirSync(path.join(__dirname, d), { recursive: true })
 );
 
-// MIDDLEWARE - THIS IS CRITICAL
 app.use(cors({ origin: '*' }));
-app.use(express.json({ limit: '50mb' }));  // ← MUST HAVE THIS
+app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Routes
 app.use('/api/auth', require('./routes/auth.routes'));
+app.use('/api/user', require('./routes/user.routes'));
 app.use('/api/advanced', require('./routes/advanced.routes'));
 
-// Health check
-app.get('/health', (req, res) => {
-    res.json({ status: 'ok', time: new Date().toISOString() });
-});
-
-app.get('/', (req, res) => {
-    res.json({ message: 'ReviewMind API is running' });
-});
+// Health
+app.get('/', (_, res) => res.json({ status: 'ReviewMind API running', version: '2.0' }));
+app.get('/health', (_, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
 
 // Error handler
 app.use((err, req, res, next) => {
@@ -36,8 +32,19 @@ app.use((err, req, res, next) => {
     res.status(500).json({ error: err.message });
 });
 
-app.listen(PORT, () => {
-    console.log(`✅ ReviewMind running on port ${PORT}`);
-});
+// Start server
+const { initDB } = require('./db/connection');
+initDB()
+    .then(() => app.listen(PORT, () => {
+        console.log(`\n✅ ReviewMind running on http://localhost:${PORT}`);
+        console.log(`   POST /api/auth/register`);
+        console.log(`   POST /api/auth/login`);
+        console.log(`   POST /api/auth/verify-mfa`);
+        console.log(`   POST /api/advanced/ml/upload-analyze`);
+    }))
+    .catch(err => {
+        console.error('[DB] Init failed:', err.message);
+        app.listen(PORT, () => console.log(`⚠️ ReviewMind on port ${PORT} (no DB)`));
+    });
 
 module.exports = app;
