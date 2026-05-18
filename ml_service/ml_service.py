@@ -27,9 +27,11 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
+# Add these right after app = FastAPI()
+
 @app.get("/")
 async def root():
-    return {"message": "ReviewMind ML Service Running"}
+    return {"status": "ok", "service": "ReviewMind ML", "version": "6.0"}
 
 @app.get("/health")
 async def health():
