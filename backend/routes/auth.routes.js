@@ -35,7 +35,7 @@ router.get('/test', (req, res) => {
 });
 
 // ============================================================
-// REGISTER - Creates new user (MFA disabled by default)
+// REGISTER - Creates new user
 // ============================================================
 router.post('/register', async (req, res) => {
     try {
@@ -45,13 +45,11 @@ router.post('/register', async (req, res) => {
             return res.status(400).json({ error: 'Email and password required' });
         }
 
-        // Check if user exists
         const exists = await query('SELECT user_id FROM users WHERE email = @email', { email: email.toLowerCase() });
         if (exists.recordset.length > 0) {
             return res.status(409).json({ error: 'Email already registered' });
         }
 
-        // Hash password and create user
         const hash = await bcrypt.hash(password, 10);
         const result = await query(
             'INSERT INTO users (email, password_hash, name, mfa_enabled) OUTPUT INSERTED.user_id VALUES (@email, @hash, @name, 0)',
@@ -59,8 +57,6 @@ router.post('/register', async (req, res) => {
         );
 
         const userId = result.recordset[0].user_id;
-        
-        // Create token
         const token = jwt.sign(
             { id: userId, email: email.toLowerCase(), name: name || email.split('@')[0] },
             JWT_SECRET,
@@ -79,7 +75,7 @@ router.post('/register', async (req, res) => {
 });
 
 // ============================================================
-// LOGIN - Checks credentials, returns token or MFA required
+// LOGIN - Returns token or MFA required
 // ============================================================
 router.post('/login', async (req, res) => {
     try {
@@ -107,7 +103,6 @@ router.post('/login', async (req, res) => {
 
         // Check if MFA is enabled
         if (user.mfa_enabled === 1 && user.mfa_secret) {
-            // Return partial token for MFA verification
             const partialToken = jwt.sign(
                 { email: user.email, mfaPending: true },
                 JWT_SECRET,
@@ -141,22 +136,19 @@ router.post('/login', async (req, res) => {
 });
 
 // ============================================================
-// SETUP MFA - Generates QR code for authenticator app
+// SETUP MFA - Generates QR code
 // ============================================================
 router.post('/setup-mfa', authMiddleware, async (req, res) => {
     try {
-        // Generate MFA secret
         const secret = speakeasy.generateSecret({
             name: `ReviewMind (${req.user.email})`
         });
 
-        // Save secret to database
         await query(
             'UPDATE users SET mfa_secret = @secret WHERE email = @email',
             { secret: secret.base32, email: req.user.email }
         );
 
-        // Generate QR code as data URL
         qrcode.toDataURL(secret.otpauth_url, (err, qrCode) => {
             if (err) {
                 return res.status(500).json({ error: 'QR generation failed' });
@@ -174,7 +166,7 @@ router.post('/setup-mfa', authMiddleware, async (req, res) => {
 });
 
 // ============================================================
-// ENABLE MFA - Verifies code and activates MFA for user
+// ENABLE MFA - Verifies code and activates MFA
 // ============================================================
 router.post('/enable-mfa', authMiddleware, async (req, res) => {
     try {
@@ -184,7 +176,6 @@ router.post('/enable-mfa', authMiddleware, async (req, res) => {
             return res.status(400).json({ error: 'MFA code required' });
         }
 
-        // Get user's MFA secret
         const result = await query(
             'SELECT mfa_secret FROM users WHERE email = @email',
             { email: req.user.email }
@@ -196,7 +187,6 @@ router.post('/enable-mfa', authMiddleware, async (req, res) => {
             return res.status(400).json({ error: 'MFA not setup. Call /setup-mfa first.' });
         }
 
-        // Verify the code
         const verified = speakeasy.totp.verify({
             secret: user.mfa_secret,
             encoding: 'base32',
@@ -208,7 +198,6 @@ router.post('/enable-mfa', authMiddleware, async (req, res) => {
             return res.status(401).json({ error: 'Invalid MFA code' });
         }
 
-        // Enable MFA for user
         await query(
             'UPDATE users SET mfa_enabled = 1 WHERE email = @email',
             { email: req.user.email }
@@ -225,7 +214,7 @@ router.post('/enable-mfa', authMiddleware, async (req, res) => {
 });
 
 // ============================================================
-// VERIFY MFA - Completes login after MFA code verification
+// VERIFY MFA - Completes login after MFA code
 // ============================================================
 router.post('/verify-mfa', async (req, res) => {
     try {
@@ -235,7 +224,6 @@ router.post('/verify-mfa', async (req, res) => {
             return res.status(400).json({ error: 'Partial token and MFA code required' });
         }
 
-        // Verify partial token
         let payload;
         try {
             payload = jwt.verify(partialToken, JWT_SECRET);
@@ -247,7 +235,6 @@ router.post('/verify-mfa', async (req, res) => {
             return res.status(400).json({ error: 'Invalid token type' });
         }
 
-        // Get user from database
         const result = await query(
             'SELECT user_id, email, name, mfa_secret FROM users WHERE email = @email',
             { email: payload.email }
@@ -259,7 +246,6 @@ router.post('/verify-mfa', async (req, res) => {
 
         const user = result.recordset[0];
 
-        // Verify MFA code
         const verified = speakeasy.totp.verify({
             secret: user.mfa_secret,
             encoding: 'base32',
@@ -271,7 +257,6 @@ router.post('/verify-mfa', async (req, res) => {
             return res.status(401).json({ error: 'Invalid MFA code' });
         }
 
-        // Generate final JWT token
         const token = jwt.sign(
             { id: user.user_id, email: user.email, name: user.name },
             JWT_SECRET,
@@ -286,6 +271,44 @@ router.post('/verify-mfa', async (req, res) => {
     } catch (error) {
         console.error('Verify MFA error:', error);
         res.status(500).json({ error: error.message });
+    }
+});
+
+// ============================================================
+// FORGOT PASSWORD
+// ============================================================
+router.post('/forgot-password', (req, res) => {
+    const resetToken = jwt.sign(
+        { email: (req.body.email || '').toLowerCase(), reset: true },
+        JWT_SECRET,
+        { expiresIn: '15m' }
+    );
+    res.json({ success: true, resetToken, message: 'Use resetToken with /reset-password' });
+});
+
+// ============================================================
+// RESET PASSWORD
+// ============================================================
+router.post('/reset-password', async (req, res) => {
+    try {
+        const { resetToken, newPassword } = req.body;
+        if (!resetToken || !newPassword) {
+            return res.status(400).json({ error: 'resetToken and newPassword required' });
+        }
+
+        const payload = jwt.verify(resetToken, JWT_SECRET);
+        if (!payload.reset) {
+            return res.status(400).json({ error: 'Invalid token' });
+        }
+
+        const hash = await bcrypt.hash(newPassword, 10);
+        await query('UPDATE users SET password_hash = @h WHERE email = @e',
+            { h: hash, e: payload.email });
+        
+        res.json({ success: true, message: 'Password reset successfully' });
+    } catch (error) {
+        console.error('Reset password error:', error);
+        res.status(400).json({ error: 'Invalid or expired token' });
     }
 });
 
